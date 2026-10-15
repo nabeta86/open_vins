@@ -62,6 +62,14 @@ ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_
   pub_points_sim = nh->advertise<sensor_msgs::PointCloud2>("points_sim", 2);
   PRINT_DEBUG("Publishing: %s\n", pub_points_sim.getTopic().c_str());
 
+  // (mod) SLAM landmarks with their 3x3 covariance. Enabled by a ROS param (not an estimator_config.yaml key) so
+  // the yaml stays byte-identical to the upstream build for A/B comparison. Only computed when subscribed.
+  nh->param<bool>("publish_landmark_cov", publish_landmark_cov, true);
+  if (publish_landmark_cov) {
+    pub_points_slam_cov = nh->advertise<sensor_msgs::PointCloud2>("points_slam_cov", 2);
+    PRINT_DEBUG("Publishing: %s\n", pub_points_slam_cov.getTopic().c_str());
+  }
+
   // Our tracking image
   it_pub_tracks = it.advertise("trackhist", 2);
   PRINT_DEBUG("Publishing: %s\n", it_pub_tracks.getTopic().c_str());
@@ -680,7 +688,7 @@ void ROS1Visualizer::publish_features() {
 
   // Check if we have subscribers
   if (pub_points_msckf.getNumSubscribers() == 0 && pub_points_slam.getNumSubscribers() == 0 && pub_points_aruco.getNumSubscribers() == 0 &&
-      pub_points_sim.getNumSubscribers() == 0)
+      pub_points_sim.getNumSubscribers() == 0 && (!publish_landmark_cov || pub_points_slam_cov.getNumSubscribers() == 0))
     return;
 
   // Get our good MSCKF features
@@ -692,6 +700,14 @@ void ROS1Visualizer::publish_features() {
   std::vector<Eigen::Vector3d> feats_slam = _app->get_features_SLAM();
   sensor_msgs::PointCloud2 cloud_SLAM = ROSVisualizerHelper::get_ros_pointcloud(feats_slam);
   pub_points_slam.publish(cloud_SLAM);
+
+  // (mod) SLAM landmarks with covariance, stamped with the state time in the IMU clock (like poseimu)
+  if (publish_landmark_cov && pub_points_slam_cov.getNumSubscribers() > 0) {
+    double t_ItoC = _app->get_state()->_calib_dt_CAMtoIMU->value()(0);
+    double timestamp_inI = _app->get_state()->_timestamp + t_ItoC;
+    std::vector<LandmarkWithCov> feats_slam_cov = _app->get_features_SLAM_with_cov(false);
+    pub_points_slam_cov.publish(ROSVisualizerHelper::get_ros_pointcloud_cov(feats_slam_cov, timestamp_inI));
+  }
 
   // Get our good ARUCO features
   std::vector<Eigen::Vector3d> feats_aruco = _app->get_features_ARUCO();

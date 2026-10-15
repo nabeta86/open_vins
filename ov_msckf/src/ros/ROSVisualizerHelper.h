@@ -24,6 +24,8 @@
 
 #include <Eigen/Eigen>
 
+#include "core/LandmarkWithCov.h"
+
 #if ROS_AVAILABLE == 1
 #include <sensor_msgs/PointCloud.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -60,6 +62,17 @@ public:
    * @return ROS pointcloud
    */
   static sensor_msgs::PointCloud2 get_ros_pointcloud(const std::vector<Eigen::Vector3d> &feats);
+
+  /**
+   * @brief (mod) SLAM landmarks with their 3x3 covariance as a PointCloud2.
+   *
+   * Fields (all little-endian, point_step 40 B): x y z (float32, p_FinG), id (uint32, frontend feature id),
+   * cxx cxy cxz cyy cyz czz (float32, upper triangle of the 3x3 covariance of p_FinG, [m^2]).
+   * frame_id "global". The stamp is the state time in the IMU clock (same convention as poseimu).
+   * @param feats Landmarks from VioManager::get_features_SLAM_with_cov
+   * @param timestamp State timestamp in the IMU clock [s]
+   */
+  static sensor_msgs::PointCloud2 get_ros_pointcloud_cov(const std::vector<LandmarkWithCov> &feats, double timestamp);
 
   /**
    * @brief Given a ov_type::PoseJPL this will convert into the ros format.

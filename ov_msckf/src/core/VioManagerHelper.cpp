@@ -25,6 +25,7 @@
 #include "feat/FeatureDatabase.h"
 #include "feat/FeatureInitializer.h"
 #include "types/LandmarkRepresentation.h"
+#include "utils/quat_ops.h"
 #include "utils/print.h"
 
 #include "init/InertialInitializer.h"
@@ -435,6 +436,99 @@ std::vector<Eigen::Vector3d> VioManager::get_features_SLAM() {
     }
   }
   return slam_feats;
+}
+
+std::vector<LandmarkWithCov> VioManager::get_features_SLAM_with_cov(bool include_aruco) {
+  std::vector<LandmarkWithCov> out;
+  out.reserve(state->_features_SLAM.size());
+  for (auto &f : state->_features_SLAM) {
+    if (!include_aruco && (int)f.first <= 4 * state->_options.max_aruco_features)
+      continue;
+    std::shared_ptr<ov_type::Landmark> landmark = f.second;
+    const auto rep = landmark->_feat_representation;
+
+    // d p_FinA / d lambda (A = anchor frame for anchored representations, global otherwise).
+    // Mirrors UpdaterHelper::get_feature_jacobian_representation (non-FEJ branch, current estimate).
+    Eigen::MatrixXd H_f;
+    Eigen::Vector3d p_FinA = landmark->get_xyz(false);
+    if (rep == LandmarkRepresentation::Representation::GLOBAL_3D || rep == LandmarkRepresentation::Representation::ANCHORED_3D) {
+      H_f = Eigen::Matrix3d::Identity();
+    } else if (rep == LandmarkRepresentation::Representation::GLOBAL_FULL_INVERSE_DEPTH ||
+               rep == LandmarkRepresentation::Representation::ANCHORED_FULL_INVERSE_DEPTH) {
+      Eigen::Vector3d v = landmark->value();
+      double sin_th = std::sin(v(0)), cos_th = std::cos(v(0));
+      double sin_phi = std::sin(v(1)), cos_phi = std::cos(v(1));
+      double rho = v(2);
+      H_f.resize(3, 3);
+      H_f << -(1.0 / rho) * sin_th * sin_phi, (1.0 / rho) * cos_th * cos_phi, -(1.0 / (rho * rho)) * cos_th * sin_phi,
+          (1.0 / rho) * cos_th * sin_phi, (1.0 / rho) * sin_th * cos_phi, -(1.0 / (rho * rho)) * sin_th * sin_phi, 0.0,
+          -(1.0 / rho) * sin_phi, -(1.0 / (rho * rho)) * cos_phi;
+    } else if (rep == LandmarkRepresentation::Representation::ANCHORED_MSCKF_INVERSE_DEPTH) {
+      Eigen::Vector3d v = landmark->value(); // (alpha, beta, rho)
+      double rho = v(2);
+      H_f.resize(3, 3);
+      H_f << (1.0 / rho), 0.0, -(1.0 / (rho * rho)) * v(0), 0.0, (1.0 / rho), -(1.0 / (rho * rho)) * v(1), 0.0, 0.0,
+          -(1.0 / (rho * rho));
+    } else if (rep == LandmarkRepresentation::Representation::ANCHORED_INVERSE_DEPTH_SINGLE) {
+      double rho = landmark->value()(0);
+      H_f.resize(3, 1);
+      H_f = -(1.0 / (rho * rho)) * landmark->uv_norm_zero;
+    } else {
+      continue; // unknown representation
+    }
+
+    LandmarkWithCov lc;
+    lc.id = f.first;
+    lc.representation = (int)rep;
+    lc.anchor_cam_id = landmark->_anchor_cam_id;
+    lc.anchor_clone_time = landmark->_anchor_clone_timestamp;
+
+    if (!LandmarkRepresentation::is_relative_representation(rep)) {
+      // Global representation: the landmark parameters are already in the global frame
+      std::vector<std::shared_ptr<ov_type::Type>> vars{landmark};
+      Eigen::MatrixXd P = StateHelper::get_marginal_covariance(state, vars);
+      lc.p_FinG = p_FinA;
+      lc.cov = H_f * P * H_f.transpose();
+    } else {
+      // Anchored representation: chain through the anchor clone pose (and the extrinsic if estimated online)
+      if (landmark->_anchor_cam_id == -1)
+        continue;
+      auto it_clone = state->_clones_IMU.find(landmark->_anchor_clone_timestamp);
+      auto it_calib = state->_calib_IMUtoCAM.find((size_t)landmark->_anchor_cam_id);
+      if (it_clone == state->_clones_IMU.end() || it_calib == state->_calib_IMUtoCAM.end())
+        continue;
+      Eigen::Matrix3d R_ItoC = it_calib->second->Rot();
+      Eigen::Vector3d p_IinC = it_calib->second->pos();
+      Eigen::Matrix3d R_GtoI = it_clone->second->Rot();
+      Eigen::Vector3d p_IinG = it_clone->second->pos();
+      Eigen::Matrix3d R_CtoG = R_GtoI.transpose() * R_ItoC.transpose();
+      lc.p_FinG = R_CtoG * (p_FinA - p_IinC) + p_IinG;
+
+      // Jacobians w.r.t. [landmark params | anchor clone (dtheta, dp) | (anchor extrinsic (dtheta, dp))]
+      std::vector<std::shared_ptr<ov_type::Type>> vars{landmark, it_clone->second};
+      int dim = H_f.cols() + 6;
+      Eigen::Matrix<double, 3, 6> H_anc;
+      H_anc.block(0, 0, 3, 3).noalias() = -R_GtoI.transpose() * skew_x(R_ItoC.transpose() * (p_FinA - p_IinC));
+      H_anc.block(0, 3, 3, 3).setIdentity();
+      Eigen::Matrix<double, 3, 6> H_calib;
+      if (state->_options.do_calib_camera_pose) {
+        H_calib.block(0, 0, 3, 3).noalias() = -R_CtoG * skew_x(p_FinA - p_IinC);
+        H_calib.block(0, 3, 3, 3) = -R_CtoG;
+        vars.push_back(it_calib->second);
+        dim += 6;
+      }
+      Eigen::MatrixXd J = Eigen::MatrixXd::Zero(3, dim);
+      J.block(0, 0, 3, H_f.cols()) = R_CtoG * H_f;
+      J.block(0, H_f.cols(), 3, 6) = H_anc;
+      if (state->_options.do_calib_camera_pose)
+        J.block(0, H_f.cols() + 6, 3, 6) = H_calib;
+      Eigen::MatrixXd P = StateHelper::get_marginal_covariance(state, vars);
+      lc.cov = J * P * J.transpose();
+    }
+    lc.cov = 0.5 * (lc.cov + lc.cov.transpose()).eval();
+    out.push_back(lc);
+  }
+  return out;
 }
 
 std::vector<Eigen::Vector3d> VioManager::get_features_ARUCO() {
