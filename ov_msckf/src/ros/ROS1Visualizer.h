@@ -143,6 +143,7 @@ protected:
   image_transport::Publisher it_pub_tracks, it_pub_loop_img_depth, it_pub_loop_img_depth_color;
   ros::Publisher pub_poseimu, pub_odomimu, pub_pathimu;
   ros::Publisher pub_points_msckf, pub_points_slam, pub_points_aruco, pub_points_sim;
+  ros::Publisher pub_points_slam_cov; // (mod) SLAM landmarks with 3x3 covariance
   ros::Publisher pub_loop_pose, pub_loop_point, pub_loop_extrinsic, pub_loop_intrinsics;
   std::shared_ptr<tf::TransformBroadcaster> mTfBr;
 
@@ -194,6 +195,8 @@ protected:
   std::vector<geometry_msgs::PoseStamped> poses_gt;
   bool publish_global2imu_tf = true;
   bool publish_calibration_tf = true;
+  /// (mod) ROS param ~publish_landmark_cov: publish /points_slam_cov (SLAM landmarks + 3x3 covariance)
+  bool publish_landmark_cov = true;
 
   // Files and if we should save total state
   bool save_total_state = false;

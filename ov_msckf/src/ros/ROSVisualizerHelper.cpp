@@ -32,6 +32,64 @@ using namespace ov_msckf;
 using namespace std;
 
 #if ROS_AVAILABLE == 1
+sensor_msgs::PointCloud2 ROSVisualizerHelper::get_ros_pointcloud_cov(const std::vector<LandmarkWithCov> &feats, double timestamp) {
+
+  // Declare message and sizes
+  sensor_msgs::PointCloud2 cloud;
+  cloud.header.frame_id = "global";
+  cloud.header.stamp = ros::Time(timestamp);
+  cloud.width = feats.size();
+  cloud.height = 1;
+  cloud.is_bigendian = false;
+  cloud.is_dense = true;
+
+  // Setup pointcloud fields: xyz + id + upper-triangular covariance (float32 keeps 4-byte offsets for simple readers)
+  sensor_msgs::PointCloud2Modifier modifier(cloud);
+  modifier.setPointCloud2Fields(10, "x", 1, sensor_msgs::PointField::FLOAT32, "y", 1, sensor_msgs::PointField::FLOAT32, "z", 1,
+                                sensor_msgs::PointField::FLOAT32, "id", 1, sensor_msgs::PointField::UINT32, "cxx", 1,
+                                sensor_msgs::PointField::FLOAT32, "cxy", 1, sensor_msgs::PointField::FLOAT32, "cxz", 1,
+                                sensor_msgs::PointField::FLOAT32, "cyy", 1, sensor_msgs::PointField::FLOAT32, "cyz", 1,
+                                sensor_msgs::PointField::FLOAT32, "czz", 1, sensor_msgs::PointField::FLOAT32);
+  modifier.resize(feats.size());
+
+  // Iterators
+  sensor_msgs::PointCloud2Iterator<float> out_x(cloud, "x");
+  sensor_msgs::PointCloud2Iterator<float> out_y(cloud, "y");
+  sensor_msgs::PointCloud2Iterator<float> out_z(cloud, "z");
+  sensor_msgs::PointCloud2Iterator<uint32_t> out_id(cloud, "id");
+  sensor_msgs::PointCloud2Iterator<float> out_cxx(cloud, "cxx");
+  sensor_msgs::PointCloud2Iterator<float> out_cxy(cloud, "cxy");
+  sensor_msgs::PointCloud2Iterator<float> out_cxz(cloud, "cxz");
+  sensor_msgs::PointCloud2Iterator<float> out_cyy(cloud, "cyy");
+  sensor_msgs::PointCloud2Iterator<float> out_cyz(cloud, "cyz");
+  sensor_msgs::PointCloud2Iterator<float> out_czz(cloud, "czz");
+
+  // Fill our iterators
+  for (const auto &f : feats) {
+    *out_x = (float)f.p_FinG(0);
+    *out_y = (float)f.p_FinG(1);
+    *out_z = (float)f.p_FinG(2);
+    *out_id = (uint32_t)f.id;
+    *out_cxx = (float)f.cov(0, 0);
+    *out_cxy = (float)f.cov(0, 1);
+    *out_cxz = (float)f.cov(0, 2);
+    *out_cyy = (float)f.cov(1, 1);
+    *out_cyz = (float)f.cov(1, 2);
+    *out_czz = (float)f.cov(2, 2);
+    ++out_x;
+    ++out_y;
+    ++out_z;
+    ++out_id;
+    ++out_cxx;
+    ++out_cxy;
+    ++out_cxz;
+    ++out_cyy;
+    ++out_cyz;
+    ++out_czz;
+  }
+  return cloud;
+}
+
 sensor_msgs::PointCloud2 ROSVisualizerHelper::get_ros_pointcloud(const std::vector<Eigen::Vector3d> &feats) {
 
   // Declare message and sizes

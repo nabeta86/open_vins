@@ -31,6 +31,7 @@
 #include <mutex>
 #include <string>
 
+#include "LandmarkWithCov.h"
 #include "VioManagerOptions.h"
 
 namespace ov_core {
@@ -115,6 +116,15 @@ public:
 
   /// Returns 3d SLAM features in the global frame
   std::vector<Eigen::Vector3d> get_features_SLAM();
+
+  /**
+   * @brief (mod) Returns the SLAM features in the global frame together with their 3x3 position covariance.
+   *
+   * Same points as get_features_SLAM(); the covariance includes the anchor clone (and, if calibrated online,
+   * the anchor camera extrinsic) uncertainty. Features whose anchor clone is missing are skipped (never aborts).
+   * @param include_aruco If true, ArUco landmarks (ids <= 4*max_aruco_features) are included too
+   */
+  std::vector<LandmarkWithCov> get_features_SLAM_with_cov(bool include_aruco = false);
 
   /// Returns 3d ARUCO features in the global frame
   std::vector<Eigen::Vector3d> get_features_ARUCO();
