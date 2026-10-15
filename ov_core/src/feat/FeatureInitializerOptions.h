@@ -68,6 +68,10 @@ struct FeatureInitializerOptions {
   /// Max condition number of linear triangulation matrix accept triangulated features
   double max_cond_number = 10000;
 
+  /// (mod) Use the stored unit bearings (omnidirectional cameras) instead of the normalized plane. Set by VioManager when
+  /// any camera is omnidirectional (not a yaml key). min_dist / max_dist then gate the range |p_FinA| instead of the anchor z.
+  bool use_bearings = false;
+
   /// Nice print function of what parameters we have loaded
   void print(const std::shared_ptr<ov_core::YamlParser> &parser = nullptr) {
     if (parser != nullptr) {

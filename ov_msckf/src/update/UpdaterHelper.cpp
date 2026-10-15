@@ -21,6 +21,7 @@
 
 #include "UpdaterHelper.h"
 
+#include "cam/CamBase.h"
 #include "state/State.h"
 
 #include "utils/quat_ops.h"
@@ -335,17 +336,25 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
 
       // Project the current feature into the current frame of reference
       Eigen::Vector3d p_FinCi = R_ItoC * p_FinIi + p_IinC;
+      std::shared_ptr<ov_core::CamBase> cam = state->_cam_intrinsics_cameras.at(pair.first);
+      bool omni = cam->is_omni();
       Eigen::Vector2d uv_norm;
-      uv_norm << p_FinCi(0) / p_FinCi(2), p_FinCi(1) / p_FinCi(2);
-
-      // Distort the normalized coordinates (radtan or fisheye)
       Eigen::Vector2d uv_dist;
-      uv_dist = state->_cam_intrinsics_cameras.at(pair.first)->distort_d(uv_norm);
+      bool meas_valid = true;
+      if (!omni) {
+        uv_norm << p_FinCi(0) / p_FinCi(2), p_FinCi(1) / p_FinCi(2);
+        // Distort the normalized coordinates (radtan or fisheye)
+        uv_dist = cam->distort_d(uv_norm);
+      } else {
+        // (mod) omnidirectional: project the 3D point directly (no normalized plane); skip points outside the model's domain
+        meas_valid = cam->valid(p_FinCi);
+        uv_dist = meas_valid ? cam->project(p_FinCi) : Eigen::Vector2d::Zero();
+      }
 
-      // Our residual
+      // Our residual ((mod) omnidirectional models may wrap, e.g. the equirectangular horizontal axis)
       Eigen::Vector2d uv_m;
       uv_m << (double)feature.uvs[pair.first].at(m)(0), (double)feature.uvs[pair.first].at(m)(1);
-      res.block(2 * c, 0, 2, 1) = uv_m - uv_dist;
+      res.block(2 * c, 0, 2, 1) = (!omni) ? Eigen::Vector2d(uv_m - uv_dist) : (meas_valid ? cam->residual(uv_m, uv_dist) : Eigen::Vector2d::Zero());
 
       //=========================================================================
       //=========================================================================
@@ -364,11 +373,30 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
 
       // Compute Jacobians in respect to normalized image coordinates and possibly the camera intrinsics
       Eigen::MatrixXd dz_dzn, dz_dzeta;
-      state->_cam_intrinsics_cameras.at(pair.first)->compute_distort_jacobian(uv_norm, dz_dzn, dz_dzeta);
+      Eigen::MatrixXd dz_dpfc;
+      if (!omni) {
+        cam->compute_distort_jacobian(uv_norm, dz_dzn, dz_dzeta);
 
-      // Normalized coordinates in respect to projection function
-      Eigen::MatrixXd dzn_dpfc = Eigen::MatrixXd::Zero(2, 3);
-      dzn_dpfc << 1 / p_FinCi(2), 0, -p_FinCi(0) / (p_FinCi(2) * p_FinCi(2)), 0, 1 / p_FinCi(2), -p_FinCi(1) / (p_FinCi(2) * p_FinCi(2));
+        // Normalized coordinates in respect to projection function
+        Eigen::MatrixXd dzn_dpfc = Eigen::MatrixXd::Zero(2, 3);
+        dzn_dpfc << 1 / p_FinCi(2), 0, -p_FinCi(0) / (p_FinCi(2) * p_FinCi(2)), 0, 1 / p_FinCi(2), -p_FinCi(1) / (p_FinCi(2) * p_FinCi(2));
+        dz_dpfc = dz_dzn * dzn_dpfc;
+      } else {
+        // (mod) omnidirectional: the model gives d uv / d p_FinCi directly (valid behind the camera too)
+        Eigen::Vector2d uv_lin;
+        Eigen::Matrix<double, 2, 3> J;
+        if (meas_valid && cam->valid(p_FinCi)) {
+          cam->jacobian_project(p_FinCi, uv_lin, J, dz_dzeta);
+        } else {
+          J.setZero();
+          dz_dzeta = Eigen::MatrixXd::Zero(2, 8);
+        }
+        // whiten anisotropic pixel noise (equirectangular rows stretched by 1/cos(lat)); (1, 1) for the other models
+        Eigen::Vector2d w = cam->residual_weights(uv_m);
+        dz_dpfc = w.asDiagonal() * J;
+        dz_dzeta = w.asDiagonal() * dz_dzeta;
+        res.block(2 * c, 0, 2, 1) = w.asDiagonal() * res.block(2 * c, 0, 2, 1);
+      }
 
       // Derivative of p_FinCi in respect to p_FinIi
       Eigen::MatrixXd dpfc_dpfg = R_ItoC * R_GtoIi;
@@ -382,7 +410,6 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
       //=========================================================================
 
       // Precompute some matrices
-      Eigen::MatrixXd dz_dpfc = dz_dzn * dzn_dpfc;
       Eigen::MatrixXd dz_dpfg = dz_dpfc * dpfc_dpfg;
 
       // CHAINRULE: get the total feature Jacobian

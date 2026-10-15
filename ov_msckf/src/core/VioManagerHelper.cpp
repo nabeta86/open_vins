@@ -249,12 +249,20 @@ void VioManager::retriangulate_active_tracks(const ov_core::CameraData &message)
         continue;
       }
 
-      // Get the UV coordinate normal
-      cv::Point2f pt_n = state->_cam_intrinsics_cameras.at(cam_id)->undistort_cv(pt_d);
+      // Get the UV coordinate normal ((mod) omnidirectional: unit bearing, may point behind the camera)
+      std::shared_ptr<ov_core::CamBase> cam_i = state->_cam_intrinsics_cameras.at(cam_id);
       Eigen::Matrix<double, 3, 1> b_i;
-      b_i << pt_n.x, pt_n.y, 1;
-      b_i = R_GtoCi.transpose() * b_i;
-      b_i = b_i / b_i.norm();
+      if (cam_i->is_omni()) {
+        Eigen::Vector2d uv_d((double)pt_d.x, (double)pt_d.y);
+        if (!cam_i->bearing_valid(uv_d))
+          continue;
+        b_i = R_GtoCi.transpose() * cam_i->bearing(uv_d);
+      } else {
+        cv::Point2f pt_n = cam_i->undistort_cv(pt_d);
+        b_i << pt_n.x, pt_n.y, 1;
+        b_i = R_GtoCi.transpose() * b_i;
+        b_i = b_i / b_i.norm();
+      }
       Eigen::Matrix3d Bperp = skew_x(b_i);
 
       // Append to our linear system
@@ -288,8 +296,12 @@ void VioManager::retriangulate_active_tracks(const ov_core::CameraData &message)
 
         // If we have a bad condition number, or it is too close
         // Then set the flag for bad (i.e. set z-axis to nan)
-        if (std::abs(condA) <= params.featinit_options.max_cond_number && p_FinCi(2, 0) >= params.featinit_options.min_dist &&
-            p_FinCi(2, 0) <= params.featinit_options.max_dist && !std::isnan(p_FinCi.norm())) {
+        // (mod) omnidirectional: gate the range (and the model's domain) instead of z
+        bool omni_i = state->_cam_intrinsics_cameras.at(cam_id)->is_omni();
+        double dchk = omni_i ? p_FinCi.norm() : p_FinCi(2, 0);
+        bool front_ok = !omni_i || state->_cam_intrinsics_cameras.at(cam_id)->valid(p_FinCi);
+        if (std::abs(condA) <= params.featinit_options.max_cond_number && dchk >= params.featinit_options.min_dist &&
+            dchk <= params.featinit_options.max_dist && front_ok && !std::isnan(p_FinCi.norm())) {
           active_tracks_posinG_new[featid] = p_FinG;
         }
       }
@@ -350,14 +362,21 @@ void VioManager::retriangulate_active_tracks(const ov_core::CameraData &message)
     // Project SLAM feature and non-cam0 features into the current frame of reference
     Eigen::Vector3d p_FinIi = R_GtoIi * (feat.second - p_IiinG);
     Eigen::Vector3d p_FinCi = R_ItoC * p_FinIi + p_IinC;
-    double depth = p_FinCi(2);
+    // (mod) omnidirectional cam0: "depth" is the range (z can be <= 0); skip points outside the model's domain
+    std::shared_ptr<ov_core::CamBase> cam0 = state->_cam_intrinsics_cameras.at(0);
+    bool omni0 = cam0->is_omni();
+    if (omni0 && !cam0->valid(p_FinCi))
+      continue;
+    double depth = omni0 ? p_FinCi.norm() : p_FinCi(2);
     Eigen::Vector2d uv_dist;
     if (feat_uvs_in_cam0.find(feat.first) != feat_uvs_in_cam0.end()) {
       uv_dist << (double)feat_uvs_in_cam0.at(feat.first).x, (double)feat_uvs_in_cam0.at(feat.first).y;
+    } else if (omni0) {
+      uv_dist = cam0->project(p_FinCi);
     } else {
       Eigen::Vector2d uv_norm;
       uv_norm << p_FinCi(0) / depth, p_FinCi(1) / depth;
-      uv_dist = state->_cam_intrinsics_cameras.at(0)->distort_d(uv_norm);
+      uv_dist = cam0->distort_d(uv_norm);
     }
 
     // Skip if not valid (i.e. negative depth, or outside of image)

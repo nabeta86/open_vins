@@ -65,15 +65,36 @@ public:
       if (cnt > best) {
         best = cnt;
         best_mask = m;
+        // adaptive stopping: N = log(1-p) / log(1 - w^8), computed in double (an int cast overflows for small w)
         double w = (double)cnt / (double)n;
         double denom = 1.0 - std::pow(w, 8);
-        if (denom > 1e-12) {
-          int need = (int)std::ceil(std::log(1.0 - prob) / std::log(denom));
-          if (need < iters)
-            iters = std::max(need, it + 1);
-        } else {
+        if (denom > 1e-12 && denom < 1.0) {
+          double need = std::ceil(std::log(1.0 - prob) / std::log(denom));
+          if (need < (double)iters)
+            iters = std::max((int)need, it + 1);
+        } else if (denom <= 1e-12) {
           iters = it + 1;
         }
+      }
+    }
+    // refit E on all inliers of the best sample (least squares over N >= 8 rows) and re-classify; keep the larger set
+    if (best >= 8) {
+      std::vector<size_t> inl;
+      for (size_t i = 0; i < n; i++)
+        if (best_mask[i])
+          inl.push_back(i);
+      Eigen::Matrix3d E;
+      if (solveN(b0, b1, inl, E)) {
+        int cnt = 0;
+        std::vector<unsigned char> m(n, 0);
+        for (size_t i = 0; i < n; i++) {
+          if (error(E, b0[i], b1[i]) < thresh_rad) {
+            m[i] = 1;
+            cnt++;
+          }
+        }
+        if (cnt >= best)
+          best_mask = m;
       }
     }
     mask = best_mask;
@@ -91,13 +112,21 @@ public:
   /// Linear 8-point solve for E (rank-2 enforced). q^T E p = 0 for each pair.
   static bool solve8(const std::vector<Eigen::Vector3d> &b0, const std::vector<Eigen::Vector3d> &b1, const std::vector<size_t> &idx,
                      Eigen::Matrix3d &E) {
-    Eigen::Matrix<double, 8, 9> A;
-    for (int r = 0; r < 8; r++) {
+    return solveN(b0, b1, idx, E);
+  }
+
+  /// Linear least-squares solve for E over N >= 8 correspondences (rank-2 enforced)
+  static bool solveN(const std::vector<Eigen::Vector3d> &b0, const std::vector<Eigen::Vector3d> &b1, const std::vector<size_t> &idx,
+                     Eigen::Matrix3d &E) {
+    if (idx.size() < 8)
+      return false;
+    Eigen::MatrixXd A(idx.size(), 9);
+    for (size_t r = 0; r < idx.size(); r++) {
       const Eigen::Vector3d &p = b0[idx[r]];
       const Eigen::Vector3d &q = b1[idx[r]];
       A.row(r) << q(0) * p(0), q(0) * p(1), q(0) * p(2), q(1) * p(0), q(1) * p(1), q(1) * p(2), q(2) * p(0), q(2) * p(1), q(2) * p(2);
     }
-    Eigen::JacobiSVD<Eigen::Matrix<double, 8, 9>> svd(A, Eigen::ComputeFullV);
+    Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV);
     Eigen::Matrix<double, 9, 1> e = svd.matrixV().col(8);
     E << e(0), e(1), e(2), e(3), e(4), e(5), e(6), e(7), e(8);
     if (!std::isfinite(E.sum()))

@@ -25,6 +25,10 @@
 #include "cam/CamEquirect.h"
 #include "cam/CamFactory.h"
 #include "cam/CamRadtan.h"
+#include "feat/Feature.h"
+#include "feat/FeatureInitializer.h"
+#include "feat/FeatureInitializerOptions.h"
+#include "track/BearingRansac.h"
 
 using namespace ov_core;
 
@@ -45,10 +49,9 @@ static Eigen::VectorXd calib(double fx, double fy, double cx, double cy, double 
 }
 
 // numeric Jacobians of project() w.r.t. the point and the intrinsics
-static void numeric_jacobians(std::shared_ptr<CamBase> cam, const Eigen::Vector3d &p, Eigen::Matrix<double, 2, 3> &Jp, Eigen::MatrixXd &Jz,
-                              const Eigen::Vector2d &(*wrap)(const Eigen::Vector2d &) = nullptr) {
-  (void)wrap;
-  double h = 1e-6;
+static void numeric_jacobians(std::shared_ptr<CamBase> cam, const Eigen::Vector3d &p, Eigen::Matrix<double, 2, 3> &Jp, Eigen::MatrixXd &Jz) {
+  // legacy (pinhole) models project through the float distort_f (pixel quantisation ~3e-5 px), so use larger steps there
+  double h = cam->is_omni() ? 1e-6 : 1e-3;
   for (int i = 0; i < 3; i++) {
     Eigen::Vector3d dp = Eigen::Vector3d::Zero();
     dp(i) = h;
@@ -59,7 +62,7 @@ static void numeric_jacobians(std::shared_ptr<CamBase> cam, const Eigen::Vector3
   Eigen::VectorXd c0 = cam->get_value();
   Jz = Eigen::MatrixXd::Zero(2, 8);
   for (int i = 0; i < cam->num_params(); i++) {
-    double hh = (i < 4) ? 1e-4 : 1e-6;
+    double hh = cam->is_omni() ? ((i < 4) ? 1e-4 : 1e-6) : ((i < 4) ? 0.5 : 2e-3);
     Eigen::VectorXd c = c0;
     c(i) += hh;
     cam->set_value(c);
@@ -89,7 +92,7 @@ int main() {
   std::vector<Model> models;
   models.push_back({"radtan", make_camera("radtan", 960, 600, calib(568.0, 567.0, 482.0, 294.0, -0.05, 0.02, 0.0005, -0.0003)), 40.0});
   models.push_back({"equidistant", make_camera("equidistant", 736, 736, calib(210.0, 211.0, 368.0, 367.0, 0.01, -0.002, 0.0003, 0.0)), 75.0});
-  models.push_back({"double_sphere", make_camera("ds", 736, 736, calib(300.0, 301.0, 368.0, 367.0, -0.2, 0.6, 0.0, 0.0)), 100.0});
+  models.push_back({"double_sphere", make_camera("ds", 736, 736, calib(180.0, 181.0, 368.0, 367.0, -0.2, 0.6, 0.0, 0.0)), 100.0});
   models.push_back({"equirectangular", make_camera("equirect", 1472, 736, calib(1472.0 / (2 * M_PI), 736.0 / M_PI, 735.5, 367.5, 0, 0, 0, 0)), 170.0});
 
   for (auto &m : models) {
@@ -137,8 +140,10 @@ int main() {
     }
     check(m.name + ": sampled points inside the domain (>= 150)", n_valid >= 150, n_valid);
     check(m.name + ": bearing(project(p)) == p/|p| and jacobian_project uv == project (< 1e-4)", worst_rt < 1e-4, worst_rt);
-    check(m.name + ": d uv / d p vs central differences (rel < 1e-5)", worst_jp < 1e-5, worst_jp);
-    check(m.name + ": d uv / d intrinsics vs central differences (rel < 1e-5)", worst_jz < 1e-5, worst_jz);
+    // float-precision legacy path (upstream functions, unchanged) vs the double-precision omni path
+    double tol = m.cam->is_omni() ? 1e-5 : 1e-2;
+    check(m.name + ": d uv / d p vs central differences (rel < " + std::to_string(tol) + ")", worst_jp < tol, worst_jp);
+    check(m.name + ": d uv / d intrinsics vs central differences (rel < " + std::to_string(tol) + ")", worst_jz < tol, worst_jz);
     if (!m.cam->is_omni()) {
       check(m.name + ": project(p) is exactly distort_d(p/z) (legacy path unchanged)", worst_legacy_p == 0.0, worst_legacy_p);
       check(m.name + ": bearing(uv) is exactly normalize([undistort_d(uv), 1])", worst_legacy_b == 0.0, worst_legacy_b);
@@ -148,7 +153,7 @@ int main() {
   printf("== double sphere: behind the camera and the validity boundary\n");
   {
     auto ds = models[2].cam;
-    Eigen::Vector3d p(2.0, 0.5, -0.4); // z < 0, well inside the 200 deg lens
+    Eigen::Vector3d p(2.0, 0.3, -0.25); // z < 0 (theta ~ 97 deg), inside the ~200 deg lens
     check("ds: point with z < 0 is valid", ds->valid(p));
     Eigen::Vector2d uv = ds->project(p);
     Eigen::Vector3d b = ds->bearing(uv);
@@ -187,6 +192,91 @@ int main() {
     check("factory: 'equirectangular' alias", make_camera("equirectangular", 10, 10, calib(1, 1, 5, 5, 0, 0, 0, 0))->model_name() == "equirectangular");
     check("factory: radtan/equidistant are not omni", !make_camera("radtan", 10, 10, calib(1, 1, 5, 5, 0, 0, 0, 0))->is_omni() &&
                                                            !make_camera("equidistant", 10, 10, calib(1, 1, 5, 5, 0, 0, 0, 0))->is_omni());
+  }
+
+  printf("== bearing RANSAC (two views, 30%% outliers, points all around the sphere)\n");
+  {
+    std::mt19937 rng2(7);
+    std::normal_distribution<double> N(0.0, 1.0);
+    Eigen::AngleAxisd aa(0.3, Eigen::Vector3d(0.2, 1.0, 0.1).normalized());
+    Eigen::Matrix3d R = aa.toRotationMatrix();
+    Eigen::Vector3d t(0.5, -0.2, 0.3);
+    std::vector<Eigen::Vector3d> b0, b1;
+    std::vector<int> truth;
+    for (int i = 0; i < 300; i++) {
+      Eigen::Vector3d p(N(rng2), N(rng2), N(rng2));
+      p = p.normalized() * (2.0 + 6.0 * std::abs(N(rng2)));   // all directions, 2-8 m
+      Eigen::Vector3d q = R * p + t;
+      bool outlier = (i % 10 < 3);
+      Eigen::Vector3d bq = outlier ? Eigen::Vector3d(N(rng2), N(rng2), N(rng2)).normalized() : q.normalized();
+      // 0.5 px-equivalent noise at f=300: 0.0017 rad
+      Eigen::Vector3d n0(N(rng2), N(rng2), N(rng2)), n1(N(rng2), N(rng2), N(rng2));
+      b0.push_back((p.normalized() + 0.0017 * n0).normalized());
+      b1.push_back((bq + 0.0017 * n1).normalized());
+      truth.push_back(outlier ? 0 : 1);
+    }
+    std::vector<unsigned char> mask;
+    BearingRansac::findEssential(b0, b1, 2.0 / 300.0, 0.999, 500, mask);
+    int tp = 0, fp = 0, fn = 0;
+    for (size_t i = 0; i < mask.size(); i++) {
+      if (mask[i] && truth[i]) tp++;
+      if (mask[i] && !truth[i]) fp++;
+      if (!mask[i] && truth[i]) fn++;
+    }
+    double recall = (double)tp / (tp + fn), precision = (double)tp / std::max(1, tp + fp);
+    check("ransac: recall of true inliers > 0.9", recall > 0.9, recall);
+    check("ransac: precision > 0.95 (random outliers rejected)", precision > 0.95, precision);
+    std::vector<unsigned char> m2;
+    BearingRansac::findEssential(std::vector<Eigen::Vector3d>(b0.begin(), b0.begin() + 5), std::vector<Eigen::Vector3d>(b1.begin(), b1.begin() + 5), 0.01, 0.999, 100, m2);
+    check("ransac: fewer than 8 correspondences -> all rejected", m2.size() == 5 && std::count(m2.begin(), m2.end(), 1) == 0);
+  }
+
+  printf("== feature initializer on the sphere (double sphere camera, point partly behind the cameras)\n");
+  for (int noisy = 0; noisy < 2; noisy++) {
+    auto cam = models[2].cam; // double sphere, f=180, ~200 deg
+    FeatureInitializerOptions opt;
+    opt.use_bearings = true;
+    opt.max_baseline = 200;
+    FeatureInitializer init(opt);
+    Eigen::Vector3d pG(2.0, 0.3, -0.5); // theta ~ 104 deg from the first camera (z < 0)
+    std::unordered_map<size_t, std::unordered_map<double, FeatureInitializer::ClonePose>> clones;
+    auto feat = std::make_shared<Feature>();
+    feat->featid = 1;
+    std::mt19937 rng3(11);
+    std::normal_distribution<double> N(0.0, 1.0);
+    int n_obs = 0;
+    for (int k = 0; k < 8; k++) {
+      double tk = 0.1 * k;
+      Eigen::Matrix3d R_GtoC = Eigen::AngleAxisd(0.04 * k, Eigen::Vector3d(0.1, 1.0, 0.0).normalized()).toRotationMatrix();
+      Eigen::Vector3d p_CinG(0.03 * k, 0.25 * k, -0.02 * k); // sideways (perpendicular to the line of sight -> parallax)
+      clones[0][tk] = FeatureInitializer::ClonePose(R_GtoC, p_CinG);
+      Eigen::Vector3d pC = R_GtoC * (pG - p_CinG);
+      if (!cam->valid(pC))
+        continue;
+      Eigen::Vector2d uv = cam->project(pC);
+      if (noisy)
+        uv += 0.5 * Eigen::Vector2d(N(rng3), N(rng3));
+      if (!cam->bearing_valid(uv))
+        continue;
+      feat->uvs[0].push_back(uv.cast<float>());
+      feat->uvs_norm[0].push_back(cam->undistort_f(uv.cast<float>()));
+      feat->bearings[0].push_back(cam->bearing(uv).cast<float>());
+      feat->timestamps[0].push_back(tk);
+      n_obs++;
+    }
+    std::string tag = noisy ? "featinit (0.5 px noise)" : "featinit (noise-free)";
+    check(tag + ": at least 4 observations with the point behind the first camera", n_obs >= 4, n_obs);
+    bool ok1 = init.single_triangulation(feat, clones);
+    double e1 = (feat->p_FinG - pG).norm();
+    double tol = noisy ? 0.05 : 1e-3;
+    check(tag + ": linear triangulation on bearings recovers the point", ok1 && e1 < tol, e1);
+    bool ok2 = init.single_gaussnewton(feat, clones);
+    double e2 = (feat->p_FinG - pG).norm();
+    check(tag + ": spherical Gauss-Newton keeps the solution", ok2 && e2 < tol, e2);
+    // anchor frame sanity: the stored anchor-frame point re-projects onto the anchor's last observation
+    FeatureInitializer::ClonePose anc = clones.at(feat->anchor_cam_id).at(feat->anchor_clone_timestamp);
+    Eigen::Vector3d pA = anc.Rot() * (feat->p_FinG - anc.pos());
+    check(tag + ": p_FinA is consistent with p_FinG", (pA - feat->p_FinA).norm() < 1e-6, (pA - feat->p_FinA).norm());
   }
 
   printf("%s (%d failures)\n", n_fail == 0 ? "ALL PASSED" : "FAILED", n_fail);

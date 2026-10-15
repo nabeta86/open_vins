@@ -246,3 +246,18 @@ void TrackBase::change_feat_id(size_t id_old, size_t id_new) {
     }
   }
 }
+
+// (mod) see TrackBase.h
+bool TrackBase::insert_measurement(size_t id, double timestamp, size_t cam_id, const cv::Point2f &pt) {
+  std::shared_ptr<CamBase> cam = camera_calib.at(cam_id);
+  cv::Point2f npt = cam->undistort_cv(pt);
+  if (!cam->is_omni()) {
+    database->update_feature(id, timestamp, cam_id, pt.x, pt.y, npt.x, npt.y);
+    return true;
+  }
+  Eigen::Vector2d uv((double)pt.x, (double)pt.y);
+  if (!cam->bearing_valid(uv))
+    return false;
+  database->update_feature(id, timestamp, cam_id, pt.x, pt.y, npt.x, npt.y, cam->bearing(uv).cast<float>());
+  return true;
+}

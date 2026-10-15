@@ -23,6 +23,7 @@
 
 #include "cam/CamBase.h"
 #include "cam/CamEqui.h"
+#include "cam/CamFactory.h"
 #include "cam/CamRadtan.h"
 #include "sim/BsplineSE3.h"
 #include "utils/colors.h"
@@ -47,14 +48,10 @@ SimulatorInit::SimulatorInit(InertialInitializerOptions &params_) {
   this->params = params_;
   params.camera_intrinsics.clear();
   for (auto const &tmp : params_.camera_intrinsics) {
-    auto tmp_cast = std::dynamic_pointer_cast<ov_core::CamEqui>(tmp.second);
-    if (tmp_cast != nullptr) {
-      params.camera_intrinsics.insert({tmp.first, std::make_shared<ov_core::CamEqui>(tmp.second->w(), tmp.second->h())});
-      params.camera_intrinsics.at(tmp.first)->set_value(params_.camera_intrinsics.at(tmp.first)->get_value());
-    } else {
-      params.camera_intrinsics.insert({tmp.first, std::make_shared<ov_core::CamRadtan>(tmp.second->w(), tmp.second->h())});
-      params.camera_intrinsics.at(tmp.first)->set_value(params_.camera_intrinsics.at(tmp.first)->get_value());
-    }
+    // (mod) clone by model name through the factory: upstream cloned by type and silently turned every model that was
+    // not CamEqui into a CamRadtan (the double sphere / equirectangular parameters were then read as k1, k2, ...)
+    params.camera_intrinsics.insert(
+        {tmp.first, ov_core::make_camera(tmp.second->model_name(), tmp.second->w(), tmp.second->h(), tmp.second->get_value())});
   }
 
   // Load the groundtruth trajectory and its spline
@@ -433,17 +430,26 @@ SimulatorInit::project_pointcloud(const Eigen::Matrix3d &R_GtoI, const Eigen::Ve
     Eigen::Vector3d p_FinI = R_GtoI * (feat.second - p_IinG);
     Eigen::Vector3d p_FinC = R_ItoC * p_FinI + p_IinC;
 
-    // Skip cloud if too far away
-    if (p_FinC(2) > params.sim_max_feature_gen_distance || p_FinC(2) < 0.1)
-      continue;
-
-    // Project to normalized coordinates
-    Eigen::Vector2f uv_norm;
-    uv_norm << (float)(p_FinC(0) / p_FinC(2)), (float)(p_FinC(1) / p_FinC(2));
-
-    // Distort the normalized coordinates
+    // Skip cloud if too far away ((mod) omnidirectional: range instead of z, and the model's domain)
     Eigen::Vector2f uv_dist;
-    uv_dist = camera->distort_f(uv_norm);
+    if (camera->is_omni()) {
+      double range = p_FinC.norm();
+      if (range > params.sim_max_feature_gen_distance || range < 0.1 || !camera->valid(p_FinC))
+        continue;
+      uv_dist = camera->project(p_FinC).cast<float>();
+      if (!camera->bearing_valid(uv_dist.cast<double>()))
+        continue;
+    } else {
+      if (p_FinC(2) > params.sim_max_feature_gen_distance || p_FinC(2) < 0.1)
+        continue;
+
+      // Project to normalized coordinates
+      Eigen::Vector2f uv_norm;
+      uv_norm << (float)(p_FinC(0) / p_FinC(2)), (float)(p_FinC(1) / p_FinC(2));
+
+      // Distort the normalized coordinates
+      uv_dist = camera->distort_f(uv_norm);
+    }
 
     // Check that it is inside our bounds
     if (uv_dist(0) < 0 || uv_dist(0) > camera->w() || uv_dist(1) < 0 || uv_dist(1) > camera->h()) {
@@ -483,17 +489,27 @@ void SimulatorInit::generate_points(const Eigen::Matrix3d &R_GtoI, const Eigen::
     // Convert to opencv format
     cv::Point2f uv_dist((float)u_dist, (float)v_dist);
 
-    // Undistort this point to our normalized coordinates
-    cv::Point2f uv_norm;
-    uv_norm = camera->undistort_cv(uv_dist);
+    // Bearing of this pixel ((mod) omnidirectional: unit bearing, the depth below is then the range)
+    Eigen::Vector3d bearing;
+    if (camera->is_omni()) {
+      Eigen::Vector2d uv_d(u_dist, v_dist);
+      if (!camera->bearing_valid(uv_d)) {
+        i--;
+        continue;
+      }
+      bearing = camera->bearing(uv_d);
+    } else {
+      // Undistort this point to our normalized coordinates
+      cv::Point2f uv_norm;
+      uv_norm = camera->undistort_cv(uv_dist);
+      bearing << uv_norm.x, uv_norm.y, 1;
+    }
 
     // Generate a random depth
     std::uniform_real_distribution<double> gen_depth(params.sim_min_feature_gen_distance, params.sim_max_feature_gen_distance);
     double depth = gen_depth(gen_state_init);
 
     // Get the 3d point
-    Eigen::Vector3d bearing;
-    bearing << uv_norm.x, uv_norm.y, 1;
     Eigen::Vector3d p_FinC;
     p_FinC = depth * bearing;
 

@@ -13,7 +13,9 @@
 #include "CamBase.h"
 #include "CamDoubleSphere.h"
 #include "CamEqui.h"
+#include "CamEquirect.h"
 #include "CamRadtan.h"
+#include "utils/colors.h"
 #include "utils/print.h"
 
 namespace ov_core {
@@ -30,7 +32,7 @@ namespace ov_core {
  */
 inline std::shared_ptr<CamBase> make_camera(const std::string &dist_model, int width, int height, const Eigen::VectorXd &calib8) {
   std::shared_ptr<CamBase> cam;
-  if (dist_model == "radtan") {
+  if (dist_model == "radtan" || dist_model == "plumb_bob" || dist_model == "pinhole") {
     cam = std::make_shared<CamRadtan>(width, height);
   } else if (dist_model == "equidistant") {
     cam = std::make_shared<CamEqui>(width, height);
