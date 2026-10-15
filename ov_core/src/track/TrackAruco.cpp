@@ -141,11 +141,9 @@ void TrackAruco::perform_tracking(double timestamp, const cv::Mat &imgin, size_t
       // NOTE: mask has max value of 255 (white) if it should be
       if (maskin.at<uint8_t>((int)corners[cam_id].at(i).at(n).y, (int)corners[cam_id].at(i).at(n).x) > 127)
         continue;
-      // Try to undistort the point
-      cv::Point2f npt_l = camera_calib.at(cam_id)->undistort_cv(corners[cam_id].at(i).at(n));
-      // Append to the ids vector and database
+      // Append to the ids vector and database ((mod) undistort + bearing for omnidirectional cameras happen inside)
       size_t tmp_id = (size_t)ids_aruco[cam_id].at(i) + n * max_tag_id;
-      database->update_feature(tmp_id, timestamp, cam_id, corners[cam_id].at(i).at(n).x, corners[cam_id].at(i).at(n).y, npt_l.x, npt_l.y);
+      insert_measurement(tmp_id, timestamp, cam_id, corners[cam_id].at(i).at(n));
       // Append to active tracked point list
       cv::KeyPoint kpt;
       kpt.pt = corners[cam_id].at(i).at(n);

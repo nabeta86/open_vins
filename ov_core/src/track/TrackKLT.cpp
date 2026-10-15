@@ -21,6 +21,8 @@
 
 #include "TrackKLT.h"
 
+#include "BearingRansac.h"
+
 #include "Grider_FAST.h"
 #include "Grider_GRID.h"
 #include "cam/CamBase.h"
@@ -174,8 +176,7 @@ void TrackKLT::feed_monocular(const CameraData &message, size_t msg_id) {
 
   // Update our feature database, with theses new observations
   for (size_t i = 0; i < good_left.size(); i++) {
-    cv::Point2f npt_l = camera_calib.at(cam_id)->undistort_cv(good_left.at(i).pt);
-    database->update_feature(good_ids_left.at(i), message.timestamp, cam_id, good_left.at(i).pt.x, good_left.at(i).pt.y, npt_l.x, npt_l.y);
+    insert_measurement(good_ids_left.at(i), message.timestamp, cam_id, good_left.at(i).pt);
   }
 
   // Move forward in time
@@ -355,14 +356,10 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
 
   // Update our feature database, with theses new observations
   for (size_t i = 0; i < good_left.size(); i++) {
-    cv::Point2f npt_l = camera_calib.at(cam_id_left)->undistort_cv(good_left.at(i).pt);
-    database->update_feature(good_ids_left.at(i), message.timestamp, cam_id_left, good_left.at(i).pt.x, good_left.at(i).pt.y, npt_l.x,
-                             npt_l.y);
+    insert_measurement(good_ids_left.at(i), message.timestamp, cam_id_left, good_left.at(i).pt);
   }
   for (size_t i = 0; i < good_right.size(); i++) {
-    cv::Point2f npt_r = camera_calib.at(cam_id_right)->undistort_cv(good_right.at(i).pt);
-    database->update_feature(good_ids_right.at(i), message.timestamp, cam_id_right, good_right.at(i).pt.x, good_right.at(i).pt.y, npt_r.x,
-                             npt_r.y);
+    insert_measurement(good_ids_right.at(i), message.timestamp, cam_id_right, good_right.at(i).pt);
   }
 
   // Move forward in time
@@ -857,20 +854,31 @@ void TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr, const std::
   cv::TermCriteria term_crit = cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01);
   cv::calcOpticalFlowPyrLK(img0pyr, img1pyr, pts0, pts1, mask_klt, error, win_size, pyr_levels, term_crit, cv::OPTFLOW_USE_INITIAL_FLOW);
 
-  // Normalize these points, so we can then do ransac
-  // We don't want to do ransac on distorted image uvs since the mapping is nonlinear
-  std::vector<cv::Point2f> pts0_n, pts1_n;
-  for (size_t i = 0; i < pts0.size(); i++) {
-    pts0_n.push_back(camera_calib.at(id0)->undistort_cv(pts0.at(i)));
-    pts1_n.push_back(camera_calib.at(id1)->undistort_cv(pts1.at(i)));
-  }
-
-  // Do RANSAC outlier rejection (note since we normalized the max pixel error is now in the normalized cords)
   std::vector<uchar> mask_rsc;
-  double max_focallength_img0 = std::max(camera_calib.at(id0)->get_K()(0, 0), camera_calib.at(id0)->get_K()(1, 1));
-  double max_focallength_img1 = std::max(camera_calib.at(id1)->get_K()(0, 0), camera_calib.at(id1)->get_K()(1, 1));
-  double max_focallength = std::max(max_focallength_img0, max_focallength_img1);
-  cv::findFundamentalMat(pts0_n, pts1_n, cv::FM_RANSAC, 2.0 / max_focallength, 0.999, mask_rsc);
+  if (camera_calib.at(id0)->is_omni() || camera_calib.at(id1)->is_omni()) {
+    // (mod) omnidirectional cameras: RANSAC on unit bearings (the normalized plane does not exist behind the camera)
+    std::vector<Eigen::Vector3d> b0, b1;
+    for (size_t i = 0; i < pts0.size(); i++) {
+      b0.push_back(camera_calib.at(id0)->bearing(Eigen::Vector2d(pts0.at(i).x, pts0.at(i).y)));
+      b1.push_back(camera_calib.at(id1)->bearing(Eigen::Vector2d(pts1.at(i).x, pts1.at(i).y)));
+    }
+    double f_equiv = std::max(camera_calib.at(id0)->focal_equiv(), camera_calib.at(id1)->focal_equiv());
+    BearingRansac::findEssential(b0, b1, 2.0 / f_equiv, 0.999, 500, mask_rsc);
+  } else {
+    // Normalize these points, so we can then do ransac
+    // We don't want to do ransac on distorted image uvs since the mapping is nonlinear
+    std::vector<cv::Point2f> pts0_n, pts1_n;
+    for (size_t i = 0; i < pts0.size(); i++) {
+      pts0_n.push_back(camera_calib.at(id0)->undistort_cv(pts0.at(i)));
+      pts1_n.push_back(camera_calib.at(id1)->undistort_cv(pts1.at(i)));
+    }
+
+    // Do RANSAC outlier rejection (note since we normalized the max pixel error is now in the normalized cords)
+    double max_focallength_img0 = std::max(camera_calib.at(id0)->get_K()(0, 0), camera_calib.at(id0)->get_K()(1, 1));
+    double max_focallength_img1 = std::max(camera_calib.at(id1)->get_K()(0, 0), camera_calib.at(id1)->get_K()(1, 1));
+    double max_focallength = std::max(max_focallength_img0, max_focallength_img1);
+    cv::findFundamentalMat(pts0_n, pts1_n, cv::FM_RANSAC, 2.0 / max_focallength, 0.999, mask_rsc);
+  }
 
   // Loop through and record only ones that are valid
   for (size_t i = 0; i < mask_klt.size(); i++) {

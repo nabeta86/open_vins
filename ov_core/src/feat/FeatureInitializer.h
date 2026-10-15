@@ -113,6 +113,16 @@ public:
   bool single_triangulation_1d(std::shared_ptr<Feature> feat, std::unordered_map<size_t, std::unordered_map<double, ClonePose>> &clonesCAM);
 
   /**
+   * @brief (mod) Unit bearing (camera frame) of measurement m of camera cam: the stored bearing if present, else [uv_norm, 1] normalised
+   */
+  Eigen::Vector3d obs_bearing(const std::shared_ptr<Feature> &feat, size_t cam, size_t m) const;
+
+  /**
+   * @brief (mod) Orthonormal tangent basis (t1, t2) of a unit vector b
+   */
+  static void tangent_basis(const Eigen::Vector3d &b, Eigen::Vector3d &t1, Eigen::Vector3d &t2);
+
+  /**
    * @brief Uses a nonlinear triangulation to refine initial linear estimate of the feature
    * @param feat Pointer to feature
    * @param clonesCAM Map between camera ID to map of timestamp to camera pose estimate (rotation from global to camera, position of camera
@@ -130,6 +140,17 @@ public:
 protected:
   /// Contains options for the initializer process
   FeatureInitializerOptions _options;
+
+  /**
+   * @brief (mod) Gauss-Newton refinement on the sphere for omnidirectional cameras.
+   * Parameters (a, b, rho) with p_FinA = (b0 + a t1 + b t2) / rho, b0 = anchor bearing, (t1, t2) its tangent basis;
+   * residual = components of the predicted bearing in the tangent plane of the measured bearing [rad].
+   */
+  bool single_gaussnewton_bearing(std::shared_ptr<Feature> feat, std::unordered_map<size_t, std::unordered_map<double, ClonePose>> &clonesCAM);
+
+  /// (mod) Sum of squared tangent-plane residuals [rad^2] for the bearing parameterisation
+  double compute_error_bearing(std::unordered_map<size_t, std::unordered_map<double, ClonePose>> &clonesCAM, std::shared_ptr<Feature> feat,
+                               const Eigen::Vector3d &b0, const Eigen::Vector3d &t1, const Eigen::Vector3d &t2, double a, double b, double rho);
 
   /**
    * @brief Helper function for the gauss newton method that computes error of the given estimate

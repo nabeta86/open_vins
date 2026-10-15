@@ -84,6 +84,28 @@ void FeatureDatabase::update_feature(size_t id, double timestamp, size_t cam_id,
   features_idlookup[id] = feat;
 }
 
+void FeatureDatabase::update_feature(size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n,
+                                     const Eigen::Vector3f &bearing) {
+
+  // (mod) same as above, plus the unit bearing (kept in lock-step with timestamps)
+  std::lock_guard<std::mutex> lck(mtx);
+  if (features_idlookup.find(id) != features_idlookup.end()) {
+    std::shared_ptr<Feature> feat = features_idlookup.at(id);
+    feat->uvs[cam_id].push_back(Eigen::Vector2f(u, v));
+    feat->uvs_norm[cam_id].push_back(Eigen::Vector2f(u_n, v_n));
+    feat->bearings[cam_id].push_back(bearing);
+    feat->timestamps[cam_id].push_back(timestamp);
+    return;
+  }
+  std::shared_ptr<Feature> feat = std::make_shared<Feature>();
+  feat->featid = id;
+  feat->uvs[cam_id].push_back(Eigen::Vector2f(u, v));
+  feat->uvs_norm[cam_id].push_back(Eigen::Vector2f(u_n, v_n));
+  feat->bearings[cam_id].push_back(bearing);
+  feat->timestamps[cam_id].push_back(timestamp);
+  features_idlookup[id] = feat;
+}
+
 std::vector<std::shared_ptr<Feature>> FeatureDatabase::features_not_containing_newer(double timestamp, bool remove, bool skip_deleted) {
 
   // Our vector of features that do not have measurements after the specified time
@@ -293,6 +315,8 @@ void FeatureDatabase::append_new_measurements(const std::shared_ptr<FeatureDatab
           temp->timestamps[cam_id] = feat.second->timestamps.at(cam_id);
           temp->uvs[cam_id] = feat.second->uvs.at(cam_id);
           temp->uvs_norm[cam_id] = feat.second->uvs_norm.at(cam_id);
+          if (feat.second->bearings.find(cam_id) != feat.second->bearings.end())
+            temp->bearings[cam_id] = feat.second->bearings.at(cam_id);
         } else {
           auto temp_times = temp->timestamps.at(cam_id);
           for (size_t i = 0; i < feat.second->timestamps.at(cam_id).size(); i++) {
@@ -301,6 +325,9 @@ void FeatureDatabase::append_new_measurements(const std::shared_ptr<FeatureDatab
               temp->timestamps.at(cam_id).push_back(feat.second->timestamps.at(cam_id).at(i));
               temp->uvs.at(cam_id).push_back(feat.second->uvs.at(cam_id).at(i));
               temp->uvs_norm.at(cam_id).push_back(feat.second->uvs_norm.at(cam_id).at(i));
+              if (feat.second->bearings.find(cam_id) != feat.second->bearings.end() &&
+                  feat.second->bearings.at(cam_id).size() == feat.second->timestamps.at(cam_id).size())
+                temp->bearings[cam_id].push_back(feat.second->bearings.at(cam_id).at(i));
             }
           }
         }
@@ -314,6 +341,7 @@ void FeatureDatabase::append_new_measurements(const std::shared_ptr<FeatureDatab
       temp->timestamps = feat.second->timestamps;
       temp->uvs = feat.second->uvs;
       temp->uvs_norm = feat.second->uvs_norm;
+      temp->bearings = feat.second->bearings;
       features_idlookup[feat.first] = temp;
     }
   }

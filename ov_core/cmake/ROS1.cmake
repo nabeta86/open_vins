@@ -100,6 +100,9 @@ install(TARGETS test_profile
         LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
         RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
+# (mod) camera model checks (radtan / equidistant / double sphere / equirectangular)
+add_executable(test_cams src/test_cams.cpp)
+target_link_libraries(test_cams ov_core_lib ${thirdparty_libraries})
 
 
 

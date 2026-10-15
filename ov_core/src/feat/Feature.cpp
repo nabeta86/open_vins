@@ -36,6 +36,9 @@ void Feature::clean_old_measurements(const std::vector<double> &valid_times) {
     auto it1 = timestamps[pair.first].begin();
     auto it2 = uvs[pair.first].begin();
     auto it3 = uvs_norm[pair.first].begin();
+    // (mod) bearings are optional (omnidirectional cameras only); erase in lock-step when present
+    bool has_b = (bearings.find(pair.first) != bearings.end() && bearings.at(pair.first).size() == timestamps[pair.first].size());
+    auto itb = has_b ? bearings[pair.first].begin() : std::vector<Eigen::VectorXf>::iterator();
 
     // Loop through measurement times, remove ones that are not in our timestamps
     while (it1 != timestamps[pair.first].end()) {
@@ -43,10 +46,14 @@ void Feature::clean_old_measurements(const std::vector<double> &valid_times) {
         it1 = timestamps[pair.first].erase(it1);
         it2 = uvs[pair.first].erase(it2);
         it3 = uvs_norm[pair.first].erase(it3);
+        if (has_b)
+          itb = bearings[pair.first].erase(itb);
       } else {
         ++it1;
         ++it2;
         ++it3;
+        if (has_b)
+          ++itb;
       }
     }
   }
@@ -65,6 +72,9 @@ void Feature::clean_invalid_measurements(const std::vector<double> &invalid_time
     auto it1 = timestamps[pair.first].begin();
     auto it2 = uvs[pair.first].begin();
     auto it3 = uvs_norm[pair.first].begin();
+    // (mod) bearings are optional (omnidirectional cameras only); erase in lock-step when present
+    bool has_b = (bearings.find(pair.first) != bearings.end() && bearings.at(pair.first).size() == timestamps[pair.first].size());
+    auto itb = has_b ? bearings[pair.first].begin() : std::vector<Eigen::VectorXf>::iterator();
 
     // Loop through measurement times, remove ones that are in our timestamps
     while (it1 != timestamps[pair.first].end()) {
@@ -72,10 +82,14 @@ void Feature::clean_invalid_measurements(const std::vector<double> &invalid_time
         it1 = timestamps[pair.first].erase(it1);
         it2 = uvs[pair.first].erase(it2);
         it3 = uvs_norm[pair.first].erase(it3);
+        if (has_b)
+          itb = bearings[pair.first].erase(itb);
       } else {
         ++it1;
         ++it2;
         ++it3;
+        if (has_b)
+          ++itb;
       }
     }
   }
@@ -94,6 +108,9 @@ void Feature::clean_older_measurements(double timestamp) {
     auto it1 = timestamps[pair.first].begin();
     auto it2 = uvs[pair.first].begin();
     auto it3 = uvs_norm[pair.first].begin();
+    // (mod) bearings are optional (omnidirectional cameras only); erase in lock-step when present
+    bool has_b = (bearings.find(pair.first) != bearings.end() && bearings.at(pair.first).size() == timestamps[pair.first].size());
+    auto itb = has_b ? bearings[pair.first].begin() : std::vector<Eigen::VectorXf>::iterator();
 
     // Loop through measurement times, remove ones that are older then the specified one
     while (it1 != timestamps[pair.first].end()) {
@@ -101,10 +118,14 @@ void Feature::clean_older_measurements(double timestamp) {
         it1 = timestamps[pair.first].erase(it1);
         it2 = uvs[pair.first].erase(it2);
         it3 = uvs_norm[pair.first].erase(it3);
+        if (has_b)
+          itb = bearings[pair.first].erase(itb);
       } else {
         ++it1;
         ++it2;
         ++it3;
+        if (has_b)
+          ++itb;
       }
     }
   }

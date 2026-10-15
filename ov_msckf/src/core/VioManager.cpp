@@ -61,6 +61,30 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
   params.print_and_load_state();
   params.print_and_load_trackers();
 
+  // (mod) Omnidirectional cameras (double sphere / equirectangular) need the bearing-based code paths and landmark
+  // representations that do not divide by the anchor depth. Dynamic initialization is pinhole-only (ov_init factors).
+  bool any_omni = false;
+  for (auto const &cam : params.camera_intrinsics)
+    any_omni = any_omni || cam.second->is_omni();
+  if (any_omni) {
+    params.featinit_options.use_bearings = true;
+    auto ok_rep = [](LandmarkRepresentation::Representation r) {
+      return r == LandmarkRepresentation::Representation::GLOBAL_3D || r == LandmarkRepresentation::Representation::ANCHORED_3D;
+    };
+    if (!ok_rep(params.state_options.feat_rep_msckf) || !ok_rep(params.state_options.feat_rep_slam) ||
+        !ok_rep(params.state_options.feat_rep_aruco)) {
+      PRINT_ERROR(RED "VioManager(): omnidirectional camera requires feat_rep_msckf/slam/aruco = GLOBAL_3D or ANCHORED_3D "
+                      "(inverse-depth representations divide by the anchor depth, which can be <= 0)\n" RESET);
+      std::exit(EXIT_FAILURE);
+    }
+    if (params.init_options.init_dyn_use) {
+      PRINT_WARNING(YELLOW "VioManager(): dynamic initialization is not supported with omnidirectional cameras yet -> disabled "
+                           "(static initialization only)\n" RESET);
+      params.init_options.init_dyn_use = false;
+    }
+    PRINT_INFO("VioManager(): omnidirectional camera model detected -> bearing-based feature paths enabled\n");
+  }
+
   // This will globally set the thread count we will use
   // -1 will reset to the system default threading (usually the num of cores)
   cv::setNumThreads(params.num_opencv_threads);

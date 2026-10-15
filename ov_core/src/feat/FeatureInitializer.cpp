@@ -70,11 +70,15 @@ bool FeatureInitializer::single_triangulation(std::shared_ptr<Feature> feat,
       Eigen::Matrix<double, 3, 1> p_CiinA;
       p_CiinA.noalias() = R_GtoA * (p_CiinG - p_AinG);
 
-      // Get the UV coordinate normal
+      // Get the UV coordinate normal ((mod) omnidirectional: the stored unit bearing, which may point behind the camera)
       Eigen::Matrix<double, 3, 1> b_i;
-      b_i << feat->uvs_norm.at(pair.first).at(m)(0), feat->uvs_norm.at(pair.first).at(m)(1), 1;
-      b_i = R_AtoCi.transpose() * b_i;
-      b_i = b_i / b_i.norm();
+      if (_options.use_bearings) {
+        b_i = R_AtoCi.transpose() * obs_bearing(feat, pair.first, m);
+      } else {
+        b_i << feat->uvs_norm.at(pair.first).at(m)(0), feat->uvs_norm.at(pair.first).at(m)(1), 1;
+        b_i = R_AtoCi.transpose() * b_i;
+        b_i = b_i / b_i.norm();
+      }
       Eigen::Matrix3d Bperp = skew_x(b_i);
 
       // Append to our linear system
@@ -100,8 +104,16 @@ bool FeatureInitializer::single_triangulation(std::shared_ptr<Feature> feat,
 
   // If we have a bad condition number, or it is too close
   // Then set the flag for bad (i.e. set z-axis to nan)
-  if (std::abs(condA) > _options.max_cond_number || p_f(2, 0) < _options.min_dist || p_f(2, 0) > _options.max_dist ||
-      std::isnan(p_f.norm())) {
+  // (mod) omnidirectional: the anchor z can be <= 0, so gate on the range and on "in front of the anchor bearing"
+  bool bad_depth;
+  if (_options.use_bearings) {
+    Eigen::Vector3d pf = p_f;
+    Eigen::Vector3d b_anchor = obs_bearing(feat, feat->anchor_cam_id, feat->timestamps.at(feat->anchor_cam_id).size() - 1);
+    bad_depth = (pf.norm() < _options.min_dist || pf.norm() > _options.max_dist || b_anchor.dot(pf) <= 0.0);
+  } else {
+    bad_depth = (p_f(2, 0) < _options.min_dist || p_f(2, 0) > _options.max_dist);
+  }
+  if (std::abs(condA) > _options.max_cond_number || bad_depth || std::isnan(p_f.norm())) {
     return false;
   }
 
@@ -139,11 +151,15 @@ bool FeatureInitializer::single_triangulation_1d(std::shared_ptr<Feature> feat,
   const Eigen::Matrix<double, 3, 3> &R_GtoA = anchorclone.Rot();
   const Eigen::Matrix<double, 3, 1> &p_AinG = anchorclone.pos();
 
-  // Get bearing in anchor frame
+  // Get bearing in anchor frame ((mod) omnidirectional: the stored unit bearing)
   Eigen::Matrix<double, 3, 1> bearing_inA;
-  bearing_inA << feat->uvs_norm.at(feat->anchor_cam_id).at(idx_anchor_bearing)(0),
-      feat->uvs_norm.at(feat->anchor_cam_id).at(idx_anchor_bearing)(1), 1;
-  bearing_inA = bearing_inA / bearing_inA.norm();
+  if (_options.use_bearings) {
+    bearing_inA = obs_bearing(feat, feat->anchor_cam_id, idx_anchor_bearing);
+  } else {
+    bearing_inA << feat->uvs_norm.at(feat->anchor_cam_id).at(idx_anchor_bearing)(0),
+        feat->uvs_norm.at(feat->anchor_cam_id).at(idx_anchor_bearing)(1), 1;
+    bearing_inA = bearing_inA / bearing_inA.norm();
+  }
 
   // Loop through each camera for this feature
   for (auto const &pair : feat->timestamps) {
@@ -165,11 +181,15 @@ bool FeatureInitializer::single_triangulation_1d(std::shared_ptr<Feature> feat,
       Eigen::Matrix<double, 3, 1> p_CiinA;
       p_CiinA.noalias() = R_GtoA * (p_CiinG - p_AinG);
 
-      // Get the UV coordinate normal
+      // Get the UV coordinate normal ((mod) omnidirectional: the stored unit bearing, which may point behind the camera)
       Eigen::Matrix<double, 3, 1> b_i;
-      b_i << feat->uvs_norm.at(pair.first).at(m)(0), feat->uvs_norm.at(pair.first).at(m)(1), 1;
-      b_i = R_AtoCi.transpose() * b_i;
-      b_i = b_i / b_i.norm();
+      if (_options.use_bearings) {
+        b_i = R_AtoCi.transpose() * obs_bearing(feat, pair.first, m);
+      } else {
+        b_i << feat->uvs_norm.at(pair.first).at(m)(0), feat->uvs_norm.at(pair.first).at(m)(1), 1;
+        b_i = R_AtoCi.transpose() * b_i;
+        b_i = b_i / b_i.norm();
+      }
       Eigen::Matrix3d Bperp = skew_x(b_i);
 
       // Append to our linear system
@@ -184,7 +204,9 @@ bool FeatureInitializer::single_triangulation_1d(std::shared_ptr<Feature> feat,
   Eigen::MatrixXd p_f = depth * bearing_inA;
 
   // Then set the flag for bad (i.e. set z-axis to nan)
-  if (p_f(2, 0) < _options.min_dist || p_f(2, 0) > _options.max_dist || std::isnan(p_f.norm())) {
+  // (mod) omnidirectional: gate the depth along the anchor bearing (= range) instead of z
+  double dchk = (_options.use_bearings) ? depth : p_f(2, 0);
+  if (dchk < _options.min_dist || dchk > _options.max_dist || std::isnan(p_f.norm())) {
     return false;
   }
 
@@ -196,6 +218,10 @@ bool FeatureInitializer::single_triangulation_1d(std::shared_ptr<Feature> feat,
 
 bool FeatureInitializer::single_gaussnewton(std::shared_ptr<Feature> feat,
                                             std::unordered_map<size_t, std::unordered_map<double, ClonePose>> &clonesCAM) {
+
+  // (mod) omnidirectional cameras: refine on the sphere (the inverse-depth parameterisation needs z > 0)
+  if (_options.use_bearings)
+    return single_gaussnewton_bearing(feat, clonesCAM);
 
   // Get into inverse depth
   double rho = 1 / feat->p_FinA(2);
@@ -420,4 +446,169 @@ double FeatureInitializer::compute_error(std::unordered_map<size_t, std::unorder
   }
 
   return err;
+}
+
+// =====================================================================================
+// (mod) omnidirectional support
+// =====================================================================================
+
+Eigen::Vector3d FeatureInitializer::obs_bearing(const std::shared_ptr<Feature> &feat, size_t cam, size_t m) const {
+  auto it = feat->bearings.find(cam);
+  if (it != feat->bearings.end() && it->second.size() == feat->timestamps.at(cam).size()) {
+    Eigen::Vector3d b = it->second.at(m).cast<double>();
+    return b.normalized();
+  }
+  Eigen::Vector3d b(feat->uvs_norm.at(cam).at(m)(0), feat->uvs_norm.at(cam).at(m)(1), 1.0);
+  return b.normalized();
+}
+
+void FeatureInitializer::tangent_basis(const Eigen::Vector3d &b, Eigen::Vector3d &t1, Eigen::Vector3d &t2) {
+  Eigen::Vector3d a = (std::abs(b(0)) < 0.9) ? Eigen::Vector3d(1.0, 0.0, 0.0) : Eigen::Vector3d(0.0, 1.0, 0.0);
+  t1 = (a - a.dot(b) * b).normalized();
+  t2 = b.cross(t1);
+}
+
+double FeatureInitializer::compute_error_bearing(std::unordered_map<size_t, std::unordered_map<double, ClonePose>> &clonesCAM,
+                                                 std::shared_ptr<Feature> feat, const Eigen::Vector3d &b0, const Eigen::Vector3d &t1,
+                                                 const Eigen::Vector3d &t2, double a, double b, double rho) {
+  double err = 0;
+  const Eigen::Matrix<double, 3, 3> &R_GtoA = clonesCAM.at(feat->anchor_cam_id).at(feat->anchor_clone_timestamp).Rot();
+  const Eigen::Matrix<double, 3, 1> &p_AinG = clonesCAM.at(feat->anchor_cam_id).at(feat->anchor_clone_timestamp).pos();
+  Eigen::Vector3d dir = b0 + a * t1 + b * t2;
+  for (auto const &pair : feat->timestamps) {
+    for (size_t m = 0; m < feat->timestamps.at(pair.first).size(); m++) {
+      const Eigen::Matrix<double, 3, 3> &R_GtoCi = clonesCAM.at(pair.first).at(feat->timestamps.at(pair.first).at(m)).Rot();
+      const Eigen::Matrix<double, 3, 1> &p_CiinG = clonesCAM.at(pair.first).at(feat->timestamps.at(pair.first).at(m)).pos();
+      Eigen::Matrix3d R_AtoCi = R_GtoCi * R_GtoA.transpose();
+      Eigen::Vector3d p_AinCi = -R_AtoCi * (R_GtoA * (p_CiinG - p_AinG));
+      Eigen::Vector3d q = R_AtoCi * (dir / rho) + p_AinCi;
+      double qn = q.norm();
+      if (qn < 1e-9)
+        continue;
+      Eigen::Vector3d qh = q / qn;
+      Eigen::Vector3d mb = obs_bearing(feat, pair.first, m);
+      Eigen::Vector3d s1, s2;
+      tangent_basis(mb, s1, s2);
+      err += std::pow(s1.dot(qh), 2) + std::pow(s2.dot(qh), 2);
+    }
+  }
+  return err;
+}
+
+bool FeatureInitializer::single_gaussnewton_bearing(std::shared_ptr<Feature> feat,
+                                                    std::unordered_map<size_t, std::unordered_map<double, ClonePose>> &clonesCAM) {
+
+  // Anchor pose and anchor bearing (last observation of the anchor camera, as in single_triangulation_1d)
+  const Eigen::Matrix<double, 3, 3> &R_GtoA = clonesCAM.at(feat->anchor_cam_id).at(feat->anchor_clone_timestamp).Rot();
+  const Eigen::Matrix<double, 3, 1> &p_AinG = clonesCAM.at(feat->anchor_cam_id).at(feat->anchor_clone_timestamp).pos();
+  Eigen::Vector3d b0 = obs_bearing(feat, feat->anchor_cam_id, feat->timestamps.at(feat->anchor_cam_id).size() - 1);
+  Eigen::Vector3d t1, t2;
+  tangent_basis(b0, t1, t2);
+
+  // Parameters: p_FinA = (b0 + a t1 + b t2) / rho (rho = inverse of the depth along the anchor bearing)
+  double depth0 = b0.dot(feat->p_FinA);
+  if (!(depth0 > 1e-6) || std::isnan(depth0))
+    return false;
+  double rho = 1.0 / depth0;
+  double a = t1.dot(feat->p_FinA) * rho;
+  double b = t2.dot(feat->p_FinA) * rho;
+
+  // Optimization parameters (same loop structure as single_gaussnewton)
+  double lam = _options.init_lamda;
+  double eps = 10000;
+  int runs = 0;
+  bool recompute = true;
+  Eigen::Matrix3d Hess = Eigen::Matrix3d::Zero();
+  Eigen::Vector3d grad = Eigen::Vector3d::Zero();
+  double cost_old = compute_error_bearing(clonesCAM, feat, b0, t1, t2, a, b, rho);
+
+  while (runs < _options.max_runs && lam < _options.max_lamda && eps > _options.min_dx) {
+    if (recompute) {
+      Hess.setZero();
+      grad.setZero();
+      Eigen::Vector3d dir = b0 + a * t1 + b * t2;
+      for (auto const &pair : feat->timestamps) {
+        for (size_t m = 0; m < feat->timestamps.at(pair.first).size(); m++) {
+          const Eigen::Matrix<double, 3, 3> &R_GtoCi = clonesCAM.at(pair.first).at(feat->timestamps[pair.first].at(m)).Rot();
+          const Eigen::Matrix<double, 3, 1> &p_CiinG = clonesCAM.at(pair.first).at(feat->timestamps[pair.first].at(m)).pos();
+          Eigen::Matrix3d R_AtoCi = R_GtoCi * R_GtoA.transpose();
+          Eigen::Vector3d p_AinCi = -R_AtoCi * (R_GtoA * (p_CiinG - p_AinG));
+          Eigen::Vector3d q = R_AtoCi * (dir / rho) + p_AinCi;
+          double qn = q.norm();
+          if (qn < 1e-9)
+            continue;
+          Eigen::Vector3d qh = q / qn;
+          Eigen::Vector3d mb = obs_bearing(feat, pair.first, m);
+          Eigen::Vector3d s1, s2;
+          tangent_basis(mb, s1, s2);
+          Eigen::Matrix<double, 2, 3> S;
+          S.row(0) = s1.transpose();
+          S.row(1) = s2.transpose();
+          Eigen::Matrix3d dqh_dq = (Eigen::Matrix3d::Identity() - qh * qh.transpose()) / qn;
+          Eigen::Matrix3d dq_dth;
+          dq_dth.col(0) = R_AtoCi * t1 / rho;
+          dq_dth.col(1) = R_AtoCi * t2 / rho;
+          dq_dth.col(2) = -R_AtoCi * dir / (rho * rho);
+          Eigen::Matrix<double, 2, 3> H = S * dqh_dq * dq_dth;
+          Eigen::Vector2d res = -S * qh; // = S (mb - qh) because S mb = 0
+          grad.noalias() += H.transpose() * res;
+          Hess.noalias() += H.transpose() * H;
+        }
+      }
+    }
+
+    // Levenberg step
+    Eigen::Matrix3d Hess_l = Hess;
+    for (size_t r = 0; r < 3; r++)
+      Hess_l(r, r) *= (1.0 + lam);
+    Eigen::Vector3d dx = Hess_l.colPivHouseholderQr().solve(grad);
+    double cost = compute_error_bearing(clonesCAM, feat, b0, t1, t2, a + dx(0), b + dx(1), rho + dx(2));
+    if (cost <= cost_old && (cost_old - cost) / cost_old < _options.min_dcost) {
+      a += dx(0);
+      b += dx(1);
+      rho += dx(2);
+      eps = 0;
+      break;
+    }
+    if (cost <= cost_old) {
+      recompute = true;
+      cost_old = cost;
+      a += dx(0);
+      b += dx(1);
+      rho += dx(2);
+      runs++;
+      lam = lam / _options.lam_mult;
+      eps = dx.norm();
+    } else {
+      recompute = false;
+      lam = lam * _options.lam_mult;
+      continue;
+    }
+  }
+
+  // Back to a point in the anchor frame
+  feat->p_FinA = (b0 + a * t1 + b * t2) / rho;
+
+  // Max baseline check (same as single_gaussnewton: baseline orthogonal to the feature direction)
+  Eigen::HouseholderQR<Eigen::MatrixXd> qr(feat->p_FinA);
+  Eigen::MatrixXd Q = qr.householderQ();
+  double base_line_max = 0.0;
+  for (auto const &pair : feat->timestamps) {
+    for (size_t m = 0; m < feat->timestamps.at(pair.first).size(); m++) {
+      const Eigen::Matrix<double, 3, 1> &p_CiinG = clonesCAM.at(pair.first).at(feat->timestamps.at(pair.first).at(m)).pos();
+      Eigen::Matrix<double, 3, 1> p_CiinA = R_GtoA * (p_CiinG - p_AinG);
+      double base_line = ((Q.block(0, 1, 3, 2)).transpose() * p_CiinA).norm();
+      if (base_line > base_line_max)
+        base_line_max = base_line;
+    }
+  }
+
+  // Gates: range (instead of z), in front of the anchor bearing, baseline ratio, NaN
+  double range = feat->p_FinA.norm();
+  if (range < _options.min_dist || range > _options.max_dist || b0.dot(feat->p_FinA) <= 0.0 ||
+      (range / base_line_max) > _options.max_baseline || std::isnan(range)) {
+    return false;
+  }
+  feat->p_FinG = R_GtoA.transpose() * feat->p_FinA + p_AinG;
+  return true;
 }

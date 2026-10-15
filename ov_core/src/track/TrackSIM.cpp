@@ -59,8 +59,7 @@ void TrackSIM::feed_measurement_simulation(double timestamp, const std::vector<i
       good_ids_left.push_back(id);
 
       // Append to the database
-      cv::Point2f npt_l = camera_calib.at(cam_id)->undistort_cv(kpt.pt);
-      database->update_feature(id, timestamp, cam_id, kpt.pt.x, kpt.pt.y, npt_l.x, npt_l.y);
+      insert_measurement(id, timestamp, cam_id, kpt.pt);
     }
 
     // Get our width and height

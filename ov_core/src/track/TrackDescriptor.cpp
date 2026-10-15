@@ -21,6 +21,8 @@
 
 #include "TrackDescriptor.h"
 
+#include "BearingRansac.h"
+
 #include <opencv2/features2d.hpp>
 
 #include "Grider_FAST.h"
@@ -150,8 +152,7 @@ void TrackDescriptor::feed_monocular(const CameraData &message, size_t msg_id) {
 
   // Update our feature database, with theses new observations
   for (size_t i = 0; i < good_left.size(); i++) {
-    cv::Point2f npt_l = camera_calib.at(cam_id)->undistort_cv(good_left.at(i).pt);
-    database->update_feature(good_ids_left.at(i), message.timestamp, cam_id, good_left.at(i).pt.x, good_left.at(i).pt.y, npt_l.x, npt_l.y);
+    insert_measurement(good_ids_left.at(i), message.timestamp, cam_id, good_left.at(i).pt);
   }
 
   // Debug info
@@ -314,13 +315,8 @@ void TrackDescriptor::feed_stereo(const CameraData &message, size_t msg_id_left,
     // Assert that our IDs are the same
     assert(good_ids_left.at(i) == good_ids_right.at(i));
     // Try to undistort the point
-    cv::Point2f npt_l = camera_calib.at(cam_id_left)->undistort_cv(good_left.at(i).pt);
-    cv::Point2f npt_r = camera_calib.at(cam_id_right)->undistort_cv(good_right.at(i).pt);
-    // Append to the database
-    database->update_feature(good_ids_left.at(i), message.timestamp, cam_id_left, good_left.at(i).pt.x, good_left.at(i).pt.y, npt_l.x,
-                             npt_l.y);
-    database->update_feature(good_ids_left.at(i), message.timestamp, cam_id_right, good_right.at(i).pt.x, good_right.at(i).pt.y, npt_r.x,
-                             npt_r.y);
+    insert_measurement(good_ids_left.at(i), message.timestamp, cam_id_left, good_left.at(i).pt);
+    insert_measurement(good_ids_left.at(i), message.timestamp, cam_id_right, good_right.at(i).pt);
   }
 
   // Debug info
@@ -510,20 +506,31 @@ void TrackDescriptor::robust_match(const std::vector<cv::KeyPoint> &pts0, const 
   if (pts0_rsc.size() < 10)
     return;
 
-  // Normalize these points, so we can then do ransac
-  // We don't want to do ransac on distorted image uvs since the mapping is nonlinear
-  std::vector<cv::Point2f> pts0_n, pts1_n;
-  for (size_t i = 0; i < pts0_rsc.size(); i++) {
-    pts0_n.push_back(camera_calib.at(id0)->undistort_cv(pts0_rsc.at(i)));
-    pts1_n.push_back(camera_calib.at(id1)->undistort_cv(pts1_rsc.at(i)));
-  }
-
-  // Do RANSAC outlier rejection (note since we normalized the max pixel error is now in the normalized cords)
   std::vector<uchar> mask_rsc;
-  double max_focallength_img0 = std::max(camera_calib.at(id0)->get_K()(0, 0), camera_calib.at(id0)->get_K()(1, 1));
-  double max_focallength_img1 = std::max(camera_calib.at(id1)->get_K()(0, 0), camera_calib.at(id1)->get_K()(1, 1));
-  double max_focallength = std::max(max_focallength_img0, max_focallength_img1);
-  cv::findFundamentalMat(pts0_n, pts1_n, cv::FM_RANSAC, 1 / max_focallength, 0.999, mask_rsc);
+  if (camera_calib.at(id0)->is_omni() || camera_calib.at(id1)->is_omni()) {
+    // (mod) omnidirectional cameras: RANSAC on unit bearings
+    std::vector<Eigen::Vector3d> b0, b1;
+    for (size_t i = 0; i < pts0_rsc.size(); i++) {
+      b0.push_back(camera_calib.at(id0)->bearing(Eigen::Vector2d(pts0_rsc.at(i).x, pts0_rsc.at(i).y)));
+      b1.push_back(camera_calib.at(id1)->bearing(Eigen::Vector2d(pts1_rsc.at(i).x, pts1_rsc.at(i).y)));
+    }
+    double f_equiv = std::max(camera_calib.at(id0)->focal_equiv(), camera_calib.at(id1)->focal_equiv());
+    BearingRansac::findEssential(b0, b1, 1.0 / f_equiv, 0.999, 500, mask_rsc);
+  } else {
+    // Normalize these points, so we can then do ransac
+    // We don't want to do ransac on distorted image uvs since the mapping is nonlinear
+    std::vector<cv::Point2f> pts0_n, pts1_n;
+    for (size_t i = 0; i < pts0_rsc.size(); i++) {
+      pts0_n.push_back(camera_calib.at(id0)->undistort_cv(pts0_rsc.at(i)));
+      pts1_n.push_back(camera_calib.at(id1)->undistort_cv(pts1_rsc.at(i)));
+    }
+
+    // Do RANSAC outlier rejection (note since we normalized the max pixel error is now in the normalized cords)
+    double max_focallength_img0 = std::max(camera_calib.at(id0)->get_K()(0, 0), camera_calib.at(id0)->get_K()(1, 1));
+    double max_focallength_img1 = std::max(camera_calib.at(id1)->get_K()(0, 0), camera_calib.at(id1)->get_K()(1, 1));
+    double max_focallength = std::max(max_focallength_img0, max_focallength_img1);
+    cv::findFundamentalMat(pts0_n, pts1_n, cv::FM_RANSAC, 1 / max_focallength, 0.999, mask_rsc);
+  }
 
   // Loop through all good matches, and only append ones that have passed RANSAC
   for (size_t i = 0; i < matches_good.size(); i++) {

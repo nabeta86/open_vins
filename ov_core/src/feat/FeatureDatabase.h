@@ -90,6 +90,9 @@ public:
    */
   void update_feature(size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n);
 
+  /// (mod) Same as update_feature() but also stores the unit bearing of the measurement (omnidirectional cameras)
+  void update_feature(size_t id, double timestamp, size_t cam_id, float u, float v, float u_n, float v_n, const Eigen::Vector3f &bearing);
+
   /**
    * @brief Get features that do not have newer measurement then the specified time.
    *
