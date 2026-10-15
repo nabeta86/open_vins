@@ -35,7 +35,7 @@ namespace ov_core {
  *
  * This class handles the tracking of [OpenCV Aruco tags](https://github.com/opencv/opencv_contrib/tree/master/modules/aruco).
  * We track the corners of the tag as compared to the pose of the tag or any other corners.
- * Right now we hardcode the dictionary to be `cv::aruco::DICT_6X6_1000`, so please generate tags in this family of tags.
+ * Right now we hardcode the dictionary to be `cv::aruco::DICT_APRILTAG_36h11`, so please generate tags in this family of tags.
  * You can generate these tags using an online utility: https://chev.me/arucogen/
  * The actual size of the tags do not matter since we do not recover the pose and instead just use this for re-detection and tracking of the
  * four corners of the tag.
@@ -55,15 +55,17 @@ public:
                       bool downsize)
       : TrackBase(cameras, 0, numaruco, stereo, histmethod), max_tag_id(numaruco), do_downsizing(downsize) {
 #if ENABLE_ARUCO_TAGS
+    // [Indoor_drone_slam patch] detect AprilTag 36h11 (same tags as TagSLAM) and
+    // enable sub-pixel corner refinement also on OpenCV < 4.7
 #if CV_MAJOR_VERSION > 4 || ( CV_MAJOR_VERSION == 4 && CV_MINOR_VERSION >= 7)
-    aruco_dict = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_1000);
+    aruco_dict = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_APRILTAG_36h11);
     aruco_params.cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
     aruco_detector = cv::aruco::ArucoDetector(aruco_dict, aruco_params);
 #else
-    aruco_dict = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_1000);
+    aruco_dict = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_APRILTAG_36h11);
     aruco_params = cv::aruco::DetectorParameters::create();
     // NOTE: people with newer opencv might fail here
-    // aruco_params->cornerRefinementMethod = cv::aruco::CornerRefineMethod::CORNER_REFINE_SUBPIX;
+    aruco_params->cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
 #endif
 #else
     PRINT_ERROR(RED "[ERROR]: you have not compiled with aruco tag support!!!\n" RESET);
