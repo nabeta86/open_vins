@@ -91,6 +91,9 @@ public:
 
   ~CamRadtan() {}
 
+  /// (mod) Name used in loop_intrinsics (same string upstream published for this model)
+  std::string model_name() const override { return "plumb_bob"; }
+
   /**
    * @brief Given a raw uv point, this will undistort it based on the camera matrices into normalized camera coords.
    * @param uv_dist Raw uv coordinate we wish to undistort

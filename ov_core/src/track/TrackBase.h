@@ -123,6 +123,27 @@ public:
   std::shared_ptr<FeatureDatabase> get_feature_database() { return database; }
 
   /**
+   * @brief (mod) Insert a raw pixel measurement into the database, adding its unit bearing for omnidirectional cameras.
+   *
+   * Pinhole cameras take exactly the upstream path (undistort, then update_feature). For omnidirectional cameras
+   * (CamBase::is_omni()) the unit bearing is stored as well; pixels without a bearing (outside the unprojection
+   * domain) are skipped and false is returned.
+   */
+  bool insert_measurement(size_t id, double timestamp, size_t cam_id, const cv::Point2f &pt) {
+    std::shared_ptr<CamBase> cam = camera_calib.at(cam_id);
+    cv::Point2f npt = cam->undistort_cv(pt);
+    if (!cam->is_omni()) {
+      database->update_feature(id, timestamp, cam_id, pt.x, pt.y, npt.x, npt.y);
+      return true;
+    }
+    Eigen::Vector2d uv((double)pt.x, (double)pt.y);
+    if (!cam->bearing_valid(uv))
+      return false;
+    database->update_feature(id, timestamp, cam_id, pt.x, pt.y, npt.x, npt.y, cam->bearing(uv).cast<float>());
+    return true;
+  }
+
+  /**
    * @brief Changes the ID of an actively tracked feature to another one.
    *
    * This function can be helpfull if you detect a loop-closure with an old frame.

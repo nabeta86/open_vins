@@ -81,6 +81,9 @@ add_executable(test_profile src/test_profile.cpp)
 ament_target_dependencies(test_profile rclcpp cv_bridge)
 target_link_libraries(test_profile ov_core_lib ${thirdparty_libraries})
 install(TARGETS test_profile DESTINATION lib/${PROJECT_NAME})
+# (mod) camera model checks (radtan / equidistant / double sphere / equirectangular)
+add_executable(test_cams src/test_cams.cpp)
+target_link_libraries(test_cams ov_core_lib ${thirdparty_libraries})
 
 # finally define this as the package
 ament_package()

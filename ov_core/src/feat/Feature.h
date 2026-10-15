@@ -51,6 +51,10 @@ public:
   /// UV normalized coordinates that this feature has been seen from (mapped by camera ID)
   std::unordered_map<size_t, std::vector<Eigen::VectorXf>> uvs_norm;
 
+  /// (mod) Unit bearing vectors in the camera frame (mapped by camera ID). Filled only for omnidirectional cameras
+  /// (CamBase::is_omni()); empty on the upstream pinhole path. Kept in lock-step with timestamps when present.
+  std::unordered_map<size_t, std::vector<Eigen::VectorXf>> bearings;
+
   /// Timestamps of each UV measurement (mapped by camera ID)
   std::unordered_map<size_t, std::vector<double>> timestamps;
 

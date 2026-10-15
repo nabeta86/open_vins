@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "cam/CamEqui.h"
+#include "cam/CamFactory.h"
 #include "cam/CamRadtan.h"
 #include "feat/FeatureInitializerOptions.h"
 #include "track/TrackBase.h"
@@ -303,14 +304,8 @@ struct InertialInitializerOptions {
         cam_eigen.block(0, 0, 4, 1) = ov_core::rot_2_quat(T_CtoI.block(0, 0, 3, 3).transpose());
         cam_eigen.block(4, 0, 3, 1) = -T_CtoI.block(0, 0, 3, 3).transpose() * T_CtoI.block(0, 3, 3, 1);
 
-        // Create intrinsics model
-        if (dist_model == "equidistant") {
-          camera_intrinsics.insert({i, std::make_shared<ov_core::CamEqui>(matrix_wh.at(0), matrix_wh.at(1))});
-          camera_intrinsics.at(i)->set_value(cam_calib);
-        } else {
-          camera_intrinsics.insert({i, std::make_shared<ov_core::CamRadtan>(matrix_wh.at(0), matrix_wh.at(1))});
-          camera_intrinsics.at(i)->set_value(cam_calib);
-        }
+        // Create intrinsics model ((mod) radtan / equidistant / ds / equirect, unknown names abort)
+        camera_intrinsics.insert({i, ov_core::make_camera(dist_model, matrix_wh.at(0), matrix_wh.at(1), cam_calib)});
         camera_extrinsics.insert({i, cam_eigen});
       }
     }
