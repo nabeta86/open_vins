@@ -20,6 +20,10 @@
 3. 360 度カメラ (Insta360 Air) 対応: 180° 超の魚眼 (double sphere) と正距円筒のカメラモデル、
    方位ベクトルによる特徴表現・三角測量・更新 (2026-10-15、当時のブランチ mod-360 = タグ mod-20261015-360)
 
+4. スケール補正 (2026-10-16): 推定器のスケールが実寸からずれたときに、外部の情報 (手動の係数・既知距離・
+   TagSLAM などの参照軌跡) でフィルタの状態そのものを相似変換で引き直す。pose_out (出口側) で位置に係数を
+   掛ける方式を置き換えた = 以後の `/ov_msckf/*` の出力・traj.txt・ランドマーク・共分散がすべて補正後の単位になる
+
 ## 変更点
 
 - `ov_core/src/track/TrackAruco.h`: 辞書 DICT_6X6_1000 → DICT_APRILTAG_36h11、
@@ -74,6 +78,25 @@
     `nodes/tests/ov360_smoke/smoke_sim_omni.sh` が回す)
   - 未対応 (後日): 動的初期化の omni 対応 (`Factor_ImageReprojCalib` は radtan/equi 固定)、`Simulator` の omni、
     equirect の角度視差 (ZUPT は画素視差のまま)、画像端の KLT wrap
+
+- (2026-10-16, スケール補正) pinhole/omni を問わず、何も指定しなければ従来どおり (既定で状態は触らない)
+  - `ov_msckf/src/state/StateHelper.h/.cpp`: `rescale(state, s)` — p_IinG・v_IinG・全クローン位置・SLAM ランドマーク
+    (表現ごと: 3D は ×s、逆深度は ÷s、方位は不変) を値と FEJ の両方で引き直し、共分散を D P D に変換
+    (姿勢・バイアス・較正変数は不変)
+  - `ov_msckf/src/core/VioManager.h/.cpp`: `request_scale(s)` (任意スレッドから、係数は累積)、`scale_applied()`、
+    `scale_count()`。要求は次の画像更新の直前 (`apply_pending_scale`) に更新スレッドで適用し、Propagator のキャッシュを無効化
+  - `ov_msckf/src/utils/ScaleUtils.h` (新規、ROS 非依存): `umeyama_scale` (相似変換の倍率の閉形式) と `ScaleEstimator`
+    (対応点の蓄積、広がり (重心からの最大距離) のゲート、適用後の引き直し)
+  - `ov_msckf/src/ros/ScaleCalibrator.h/.cpp` (新規、ROS1): `~scale_cmd` (Float64、係数を掛ける)、`~scale_mark` (Empty) +
+    `~scale_distance` (Float64、既知距離 ÷ 推定器上の移動)、`~scale_ref_topic` (Odometry / PoseStamped /
+    PoseWithCovarianceStamped、poseimu と同じ IMU 時計) との対応点から倍率を `~scale_est` (絶対の係数) に出し、
+    `~scale_auto` で自動適用。状態は `~scale_status` (JSON、latch)。`~scale_inject_at`/`~scale_inject` は検査用の注入
+  - `ov_msckf/src/ros/ROS1Visualizer.h/.cpp`: ScaleCalibrator を生成し `publish_state` から位置を渡す。適用後は
+    pathimu の履歴も同じ比で引き直す
+  - `ov_msckf/src/run_simulation.cpp`: ROS1 のとき画像ごとに `ros::spinOnce()` (参照姿勢・コマンドの配達)
+  - `ov_msckf/src/test_scale.cpp` (新規、`rosrun ov_msckf test_scale`): 6 つの表現すべてで rescale の値・FEJ・共分散・往復、
+    Umeyama と ScaleEstimator
+  - `ov_msckf/cmake/ROS1.cmake`, `package.xml`: `topic_tools` 依存 (参照トピックの型を実行時に判別)
 
 ## 元との差分
 

@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.3)
 
 # Find ROS build system
-find_package(catkin QUIET COMPONENTS roscpp rosbag tf std_msgs geometry_msgs sensor_msgs nav_msgs visualization_msgs image_transport cv_bridge ov_core ov_init)
+find_package(catkin QUIET COMPONENTS roscpp rosbag tf std_msgs geometry_msgs sensor_msgs nav_msgs visualization_msgs image_transport cv_bridge topic_tools ov_core ov_init)
 
 # Describe ROS project
 if (catkin_FOUND AND ENABLE_ROS)
     add_definitions(-DROS_AVAILABLE=1)
     catkin_package(
-            CATKIN_DEPENDS roscpp rosbag tf std_msgs geometry_msgs sensor_msgs nav_msgs visualization_msgs image_transport cv_bridge ov_core ov_init
+            CATKIN_DEPENDS roscpp rosbag tf std_msgs geometry_msgs sensor_msgs nav_msgs visualization_msgs image_transport cv_bridge topic_tools ov_core ov_init
             INCLUDE_DIRS src/
             LIBRARIES ov_msckf_lib
     )
@@ -89,7 +89,7 @@ list(APPEND LIBRARY_SOURCES
         src/update/UpdaterZeroVelocity.cpp
 )
 if (catkin_FOUND AND ENABLE_ROS)
-    list(APPEND LIBRARY_SOURCES src/ros/ROS1Visualizer.cpp src/ros/ROSVisualizerHelper.cpp)
+    list(APPEND LIBRARY_SOURCES src/ros/ROS1Visualizer.cpp src/ros/ROSVisualizerHelper.cpp src/ros/ScaleCalibrator.cpp)
 endif ()
 file(GLOB_RECURSE LIBRARY_HEADERS "src/*.h")
 add_library(ov_msckf_lib SHARED ${LIBRARY_SOURCES} ${LIBRARY_HEADERS})
@@ -153,6 +153,15 @@ install(TARGETS test_sim_meas
 add_executable(test_sim_repeat src/test_sim_repeat.cpp)
 target_link_libraries(test_sim_repeat ov_msckf_lib ${thirdparty_libraries})
 install(TARGETS test_sim_repeat
+        ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+        LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+        RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+# (ov360) unit test of the scale correction (StateHelper::rescale, Umeyama scale estimator)
+add_executable(test_scale src/test_scale.cpp)
+target_link_libraries(test_scale ov_msckf_lib ${thirdparty_libraries})
+install(TARGETS test_scale
         ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
         LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
         RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

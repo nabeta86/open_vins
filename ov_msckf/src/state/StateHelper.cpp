@@ -21,6 +21,8 @@
 
 #include "StateHelper.h"
 
+#include <cmath>
+
 #include "state/State.h"
 
 #include "types/Landmark.h"
@@ -642,4 +644,69 @@ void StateHelper::marginalize_slam(std::shared_ptr<State> state) {
       it0++;
     }
   }
+}
+void StateHelper::rescale(std::shared_ptr<State> state, double s) {
+
+  // (ov360) Similarity rescale: positions/velocity ×s, inverse depths ÷s, covariance D P D
+  assert(std::isfinite(s) && s > 0.0);
+  if (s == 1.0)
+    return;
+  std::lock_guard<std::mutex> lock(state->_mutex_state);
+  Eigen::VectorXd d = Eigen::VectorXd::Ones(state->_Cov.rows());
+
+  // IMU state [q(4) p(3) v(3) bg(3) ba(3)]: scale p and v (values and FEJ through the composite setter so
+  // the cached 16-vector used by IMU::update() stays consistent)
+  {
+    Eigen::MatrixXd x = state->_imu->value();
+    Eigen::MatrixXd xf = state->_imu->fej();
+    x.block(4, 0, 6, 1) *= s;
+    xf.block(4, 0, 6, 1) *= s;
+    state->_imu->set_value(x);
+    state->_imu->set_fej(xf);
+    d.segment(state->_imu->p()->id(), 3).setConstant(s);
+    d.segment(state->_imu->v()->id(), 3).setConstant(s);
+  }
+
+  // Clones [q(4) p(3)]
+  for (auto &clone : state->_clones_IMU) {
+    Eigen::MatrixXd x = clone.second->value();
+    Eigen::MatrixXd xf = clone.second->fej();
+    x.block(4, 0, 3, 1) *= s;
+    xf.block(4, 0, 3, 1) *= s;
+    clone.second->set_value(x);
+    clone.second->set_fej(xf);
+    d.segment(clone.second->p()->id(), 3).setConstant(s);
+  }
+
+  // SLAM landmarks, per representation
+  for (auto &feat : state->_features_SLAM) {
+    auto lm = feat.second;
+    Eigen::VectorXd fac = Eigen::VectorXd::Ones(lm->size());
+    switch (lm->_feat_representation) {
+    case LandmarkRepresentation::Representation::GLOBAL_3D:
+    case LandmarkRepresentation::Representation::ANCHORED_3D:
+      fac.setConstant(s); // p ×s
+      break;
+    case LandmarkRepresentation::Representation::GLOBAL_FULL_INVERSE_DEPTH:
+    case LandmarkRepresentation::Representation::ANCHORED_FULL_INVERSE_DEPTH:
+      fac(2) = 1.0 / s; // (theta, phi, rho=1/|p|): angles unchanged
+      break;
+    case LandmarkRepresentation::Representation::ANCHORED_MSCKF_INVERSE_DEPTH:
+      fac(2) = 1.0 / s; // (x/z, y/z, 1/z): the two ratios are scale free
+      break;
+    case LandmarkRepresentation::Representation::ANCHORED_INVERSE_DEPTH_SINGLE:
+      fac(0) = 1.0 / s; // rho along the fixed bearing uv_norm_zero
+      break;
+    default:
+      PRINT_ERROR(RED "[SCALE]: unknown landmark representation, cannot rescale\n" RESET);
+      assert(false);
+      continue;
+    }
+    lm->set_value(fac.asDiagonal() * lm->value());
+    lm->set_fej(fac.asDiagonal() * lm->fej());
+    d.segment(lm->id(), lm->size()) = fac;
+  }
+
+  // Covariance: error state scales linearly with the same factors
+  state->_Cov = d.asDiagonal() * state->_Cov * d.asDiagonal();
 }

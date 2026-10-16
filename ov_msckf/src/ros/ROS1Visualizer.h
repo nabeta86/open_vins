@@ -71,6 +71,8 @@ class Simulator;
  * - Our different features (SLAM, MSCKF, ARUCO)
  * - Groundtruth trajectory if we have it
  */
+class ScaleCalibrator;
+
 class ROS1Visualizer {
 
 public:
@@ -144,6 +146,8 @@ protected:
   ros::Publisher pub_poseimu, pub_odomimu, pub_pathimu;
   ros::Publisher pub_points_msckf, pub_points_slam, pub_points_aruco, pub_points_sim;
   ros::Publisher pub_points_slam_cov; // (mod) SLAM landmarks with 3x3 covariance
+  std::shared_ptr<ScaleCalibrator> scale_calib_; // (ov360) scale correction interface
+  double scale_seen_total_ = 1.0;                // (ov360) applied factor the published path is consistent with
   ros::Publisher pub_loop_pose, pub_loop_point, pub_loop_extrinsic, pub_loop_intrinsics;
   std::shared_ptr<tf::TransformBroadcaster> mTfBr;
 

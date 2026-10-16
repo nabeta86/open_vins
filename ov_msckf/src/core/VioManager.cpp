@@ -21,6 +21,8 @@
 
 #include "VioManager.h"
 
+#include <cmath>
+
 #include "feat/Feature.h"
 #include "feat/FeatureDatabase.h"
 #include "feat/FeatureInitializer.h"
@@ -274,6 +276,7 @@ void VioManager::feed_measurement_simulation(double timestamp, const std::vector
     message.images.push_back(cv::Mat::zeros(cv::Size(width, height), CV_8UC1));
     message.masks.push_back(cv::Mat::zeros(cv::Size(width, height), CV_8UC1));
   }
+  apply_pending_scale(); // (ov360)
   do_feature_propagate_update(message);
 }
 
@@ -339,6 +342,9 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
       return;
     }
   }
+
+  // (ov360) apply a requested scale correction before propagating/updating with this image
+  apply_pending_scale();
 
   // Call on our propagate and update function
   do_feature_propagate_update(message);
@@ -735,4 +741,35 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
                state->_calib_imu_tg->value()(4), state->_calib_imu_tg->value()(5), state->_calib_imu_tg->value()(6),
                state->_calib_imu_tg->value()(7), state->_calib_imu_tg->value()(8));
   }
+}
+
+void VioManager::request_scale(double s) {
+  // (ov360) see StateHelper::rescale
+  if (!std::isfinite(s) || s <= 0.0 || s > 1.0e4) {
+    PRINT_WARNING(YELLOW "[SCALE]: ignoring invalid scale factor %.6f\n" RESET, s);
+    return;
+  }
+  std::lock_guard<std::mutex> lock(scale_mtx_);
+  scale_pending_ *= s;
+  PRINT_INFO("[SCALE]: requested x%.4f (pending x%.4f, applied so far x%.4f)\n", s, scale_pending_, scale_total_.load());
+}
+
+void VioManager::apply_pending_scale() {
+  // (ov360) runs in the update thread; a request made before initialization stays pending until the first update
+  if (!is_initialized_vio)
+    return;
+  double s;
+  {
+    std::lock_guard<std::mutex> lock(scale_mtx_);
+    s = scale_pending_;
+    scale_pending_ = 1.0;
+  }
+  if (s == 1.0)
+    return;
+  StateHelper::rescale(state, s);
+  propagator->invalidate_cache();
+  scale_total_ = scale_total_.load() * s;
+  scale_count_++;
+  PRINT_INFO(GREEN "[SCALE]: state rescaled by x%.4f (total x%.4f, %d clones, %d slam landmarks)\n" RESET, s, scale_total_.load(),
+             (int)state->_clones_IMU.size(), (int)state->_features_SLAM.size());
 }

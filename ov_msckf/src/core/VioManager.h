@@ -25,6 +25,7 @@
 #include <Eigen/StdVector>
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <boost/filesystem.hpp>
 #include <fstream>
 #include <memory>
@@ -98,6 +99,21 @@ public:
 
   /// If we are initialized or not
   bool initialized() { return is_initialized_vio && timelastupdate != -1; }
+
+  /**
+   * @brief (ov360) Request that the metric part of the state be multiplied by s (scale correction).
+   *
+   * Positions, velocity, SLAM landmarks and the covariance are rescaled by StateHelper::rescale() in the
+   * update thread right before the next image update, so it is safe to call from any thread. Requests
+   * accumulate (two requests of 1.1 give 1.21). Invalid factors are ignored with a warning.
+   */
+  void request_scale(double s);
+
+  /// (ov360) Product of all scale factors applied so far (1.0 = the estimator was never rescaled)
+  double scale_applied() const { return scale_total_.load(); }
+
+  /// (ov360) Number of rescale operations applied so far
+  int scale_count() const { return scale_count_.load(); }
 
   /// Timestamp that the system was initialized at
   double initialized_time() { return startup_time; }
@@ -234,6 +250,13 @@ protected:
 
   // Threads and their atomics
   std::atomic<bool> thread_init_running, thread_init_success;
+
+  // (ov360) scale correction: pending factor (set from any thread), applied in the update thread
+  void apply_pending_scale();
+  std::mutex scale_mtx_;
+  double scale_pending_ = 1.0;
+  std::atomic<double> scale_total_{1.0};
+  std::atomic<int> scale_count_{0};
 
   // If we did a zero velocity update
   bool did_zupt_update = false;

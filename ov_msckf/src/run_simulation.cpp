@@ -170,6 +170,9 @@ int main(int argc, char **argv) {
 #if ROS_AVAILABLE == 1 || ROS_AVAILABLE == 2
         viz->visualize();
 #endif
+#if ROS_AVAILABLE == 1
+        ros::spinOnce(); // (ov360) deliver scale commands / reference poses to the ScaleCalibrator
+#endif
       }
       buffer_timecam = time_cam;
       buffer_camids = camids;

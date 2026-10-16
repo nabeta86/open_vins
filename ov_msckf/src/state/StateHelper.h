@@ -229,6 +229,19 @@ public:
    */
   static void marginalize_slam(std::shared_ptr<State> state);
 
+  /**
+   * @brief (ov360) Similarity rescale of the metric part of the state about the global origin.
+   *
+   * Multiplies p_IinG, v_IinG, every clone position and every SLAM landmark position by s (per
+   * representation: 3D values ×s, inverse depths ÷s, bearings unchanged), for both the current values
+   * and the first-estimate (FEJ) values, and transforms the covariance as P ← D P D with the same factors
+   * on the diagonal. Orientations, biases and all calibration variables are untouched.
+   * Used to correct a scale error of the estimator from an external measurement (known distance,
+   * reference trajectory); after this call every output of the filter is in the corrected units.
+   * @param s factor to apply (> 0). 1 is a no-op.
+   */
+  static void rescale(std::shared_ptr<State> state, double s);
+
 private:
   /**
    * All function in this class should be static.

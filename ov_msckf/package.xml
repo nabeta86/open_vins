@@ -30,6 +30,7 @@
     <depend condition="$ROS_VERSION == 1">sensor_msgs</depend>
     <depend condition="$ROS_VERSION == 1">geometry_msgs</depend>
     <depend condition="$ROS_VERSION == 1">nav_msgs</depend>
+    <depend condition="$ROS_VERSION == 1">topic_tools</depend>
     <depend condition="$ROS_VERSION == 1">visualization_msgs</depend>
     <depend condition="$ROS_VERSION == 1">image_transport</depend>
     <depend condition="$ROS_VERSION == 1">cv_bridge</depend>

@@ -21,6 +21,8 @@
 
 #include "ROS1Visualizer.h"
 
+#include "ScaleCalibrator.h"
+
 #include "core/VioManager.h"
 #include "ros/ROSVisualizerHelper.h"
 #include "sim/Simulator.h"
@@ -75,6 +77,9 @@ ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_
   PRINT_DEBUG("Publishing: %s\n", it_pub_tracks.getTopic().c_str());
 
   // Groundtruth publishers
+  // (ov360) scale correction: commands / reference-based estimate / status (see ScaleCalibrator)
+  scale_calib_ = std::make_shared<ScaleCalibrator>(nh, app);
+
   pub_posegt = nh->advertise<geometry_msgs::PoseStamped>("posegt", 2);
   PRINT_DEBUG("Publishing: %s\n", pub_posegt.getTopic().c_str());
   pub_pathgt = nh->advertise<nav_msgs::Path>("pathgt", 2);
@@ -634,6 +639,18 @@ void ROS1Visualizer::publish_state() {
   //=========================================================
   //=========================================================
 
+  // (ov360) if the estimator was rescaled since the last publish, rescale the stored path so the
+  // published pathimu stays consistent with the current units
+  if (_app->scale_applied() != scale_seen_total_) {
+    double r = _app->scale_applied() / scale_seen_total_;
+    for (auto &ps : poses_imu) {
+      ps.pose.position.x *= r;
+      ps.pose.position.y *= r;
+      ps.pose.position.z *= r;
+    }
+    scale_seen_total_ = _app->scale_applied();
+  }
+
   // Append to our pose vector
   geometry_msgs::PoseStamped posetemp;
   posetemp.header = poseIinM.header;
@@ -651,6 +668,9 @@ void ROS1Visualizer::publish_state() {
     arrIMU.poses.push_back(poses_imu.at(i));
   }
   pub_pathimu.publish(arrIMU);
+
+  // (ov360) feed the scale calibrator with the published position
+  scale_calib_->on_state(timestamp_inI, state->_imu->pos());
 
   // Move them forward in time
   poses_seq_imu++;
