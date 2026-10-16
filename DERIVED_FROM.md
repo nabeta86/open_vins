@@ -1,14 +1,15 @@
-# open_vins (mod) — rpng/open_vins の改変版
+# open_vins (ov360) — rpng/open_vins の改変版 (360 度カメラ対応 + ランドマーク共分散)
 
 - 派生元: https://github.com/rpng/open_vins (ブランチ master)
 - 派生元コミット: `69488123ed9362dd44b6f28e7f4680abbff1442b`
   (v2.7-20-g6948812, 2025-11-30, "Merge pull request #530 from rpng/android")
 - 改変者: Indoor_drone_slam プロジェクト側 (nabeta86)
-- 改変版の置き場: https://github.com/nabeta86/open_vins ブランチ `mod`
-  (Docker イメージに焼くコミットにはタグ `mod-YYYYMMDD[-suffix]` を打つ。実験は `mod-<topic>` ブランチ)
-- 利用側: `Indoor_drone_slam/ubuntu/.env` の `OPENVINS_MOD_COMMIT` でコミットを固定し、イメージ内の
-  `/data/openvins_mod/catkin_ws` に **別ワークスペース** としてビルドする。上流の無改変ビルド
-  (`/data/openvins/catkin_ws`) と併存させ、A/B 比較に使う。詳細は `Indoor_drone_slam/docs/openvins_mod.md`
+- 改変版の置き場: https://github.com/nabeta86/open_vins ブランチ `ov360`
+  (Docker イメージに焼くコミットにはタグ `ov360-YYYYMMDD[-suffix]` を打つ。実験は `ov360-<topic>` ブランチ。
+  2026-10-16 に `mod` から改名 = 「360 度対応」が名前で分かるように。旧タグ `mod-20261015-{base,landmark-cov,360}` は履歴として残す)
+- 利用側: `Indoor_drone_slam/ubuntu/.env` の `OPENVINS_360_COMMIT` でコミットを固定し、イメージ内の
+  `/data/openvins_360/catkin_ws` に **別ワークスペース** としてビルドする。上流の無改変ビルド
+  (`/data/openvins/catkin_ws`) と併存させ、A/B 比較に使う。詳細は `Indoor_drone_slam/docs/openvins_360.md`
 
 ## 変更理由
 
@@ -17,7 +18,7 @@
 2. SLAM ランドマークごとの 3×3 位置共分散を `points_slam_cov` (sensor_msgs/PointCloud2) で出す
    (地図側 GNG の信頼度に使う。2026-10-15)
 3. 360 度カメラ (Insta360 Air) 対応: 180° 超の魚眼 (double sphere) と正距円筒のカメラモデル、
-   方位ベクトルによる特徴表現・三角測量・更新 (2026-10-15、ブランチ mod-360)
+   方位ベクトルによる特徴表現・三角測量・更新 (2026-10-15、当時のブランチ mod-360 = タグ mod-20261015-360)
 
 ## 変更点
 
@@ -70,7 +71,7 @@
     すべて CamRadtan にしていた = DS/equirect のパラメータを k1,k2 として射影) から `make_camera(model_name())` に変更。
     生成・射影は omni なら `bearing` / `project` / `valid` を使う (距離ゲート)。`config/rpng_sim_ds{,0,1,w}` と
     `config/rpng_sim_equirect` は合成データで omni 経路を検証する設定 (Indoor_drone_slam の
-    `nodes/tests/ovmod_smoke/smoke_sim_omni.sh` が回す)
+    `nodes/tests/ov360_smoke/smoke_sim_omni.sh` が回す)
   - 未対応 (後日): 動的初期化の omni 対応 (`Factor_ImageReprojCalib` は radtan/equi 固定)、`Simulator` の omni、
     equirect の角度視差 (ZUPT は画素視差のまま)、画像端の KLT wrap
 
