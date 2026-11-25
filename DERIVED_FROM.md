@@ -121,6 +121,23 @@
   - 検証: Indoor_drone_slam 側 `nodes/tests/ov360_smoke/smoke_sim_multicam.sh` (同期 vs 非同期の RMSE、SLAM 特徴が立つこと、
     ZUPT の視差判定に特徴が入ること)
 
+- (2026-11-25, スケール補正の引き直しの中心) 何も指定しなければ従来どおり (原点まわり)。理由: 外部の自己位置 (MicoVIO) を基準に
+  飛行中も自動で寸法を直したいが、原点まわりの相似変換は掛けるたびに現在位置が (s−1)|p| だけ跳ぶ (下流の地図・ナビが跳びとして扱う)
+  - `ov_msckf/src/state/StateHelper.h/.cpp`: `rescale(state, s, pivot = 0)` — p' = pivot + s (p − pivot)。大域の位置
+    (p_IinG・クローン位置・GLOBAL_3D の特徴点) に (1−s) pivot を足す (値と FEJ)。速度と anchor 相対の特徴点は ×s のまま。
+    平行移動は (観測できない) 大域位置の基準の取り直しなので共分散は従来の D P D のまま、GLOBAL_FULL_INVERSE_DEPTH だけ
+    表現の付け替えのヤコビアン (dp/dx_new)⁻¹ (dp/dx_old) を 3×3 ブロックに掛ける
+  - `ov_msckf/src/core/VioManager.h/.cpp`: `set_scale_pivot_current(bool)` (true = 適用時点の IMU 位置を中心にする)、
+    `scale_ops_since(n)` (適用済みの変換 p ← s p + shift の履歴。利用側が自分の履歴を同じ変換で引き直すため)
+  - `ov_msckf/src/utils/ScaleUtils.h`: `ScaleEstimator::transform(s, shift)`
+  - `ov_msckf/src/ros/ScaleCalibrator.h/.cpp`: `~scale_pivot` (origin | current)、履歴・対応点・基準 A を `scale_ops_since` で引き直す
+    (比だけで引き直すと、中心ありのとき適用の前後で対応点の座標がずれて倍率の推定が狂う)。`~scale_status` に `pivot`
+  - `ov_msckf/src/ros/ROS1Visualizer.h/.cpp`: pathimu の履歴も同じ変換で引き直す
+  - `ov_msckf/src/test_scale.cpp`: 中心ありの rescale を 6 つの表現で (現在位置が動かない、クローン・特徴点が中心まわりに縮む、
+    特徴点の xyz の共分散が s² 倍、対称・半正定、同じ中心の 1/s で元に戻る)、`ScaleEstimator::transform`
+  - Indoor_drone_slam 側: `slam/launch/ov_360_subscribe.launch` の `scale_pivot`、GUI の「現在位置を中心に」、
+    `nodes/tests/ov360_smoke/smoke_scale.sh` の late / late_pivot / auto_pivot
+
 ## 元との差分
 
 ```bash

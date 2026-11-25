@@ -95,6 +95,12 @@ public:
       p *= ratio;
   }
 
+  /// Same, for a rescale about a pivot: every VIO position became s p + shift
+  void transform(double s, const Eigen::Vector3d &shift) {
+    for (auto &p : src_)
+      p = s * p + shift;
+  }
+
   void reset() {
     src_.clear();
     dst_.clear();

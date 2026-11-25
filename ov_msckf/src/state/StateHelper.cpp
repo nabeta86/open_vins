@@ -645,14 +645,26 @@ void StateHelper::marginalize_slam(std::shared_ptr<State> state) {
     }
   }
 }
-void StateHelper::rescale(std::shared_ptr<State> state, double s) {
+/// (ov360) d p / d (theta, phi, rho) of the full inverse depth form p = (1/rho) [cos(theta) sin(phi), sin(theta) sin(phi), cos(phi)]
+static Eigen::Matrix3d dxyz_dinvdepth(const Eigen::Vector3d &x) {
+  double ct = std::cos(x(0)), st = std::sin(x(0)), cp = std::cos(x(1)), sp = std::sin(x(1)), r = 1.0 / x(2);
+  Eigen::Matrix3d A;
+  A << -r * st * sp, r * ct * cp, -r * r * ct * sp, r * ct * sp, r * st * cp, -r * r * st * sp, 0.0, -r * sp, -r * r * cp;
+  return A;
+}
 
-  // (ov360) Similarity rescale: positions/velocity ×s, inverse depths ÷s, covariance D P D
+void StateHelper::rescale(std::shared_ptr<State> state, double s, const Eigen::Vector3d &pivot) {
+
+  // (ov360) Similarity rescale: positions/velocity ×s, inverse depths ÷s, covariance D P D.
+  // With a pivot the global positions are additionally shifted by (1-s) pivot, i.e. p' = pivot + s (p - pivot)
   assert(std::isfinite(s) && s > 0.0);
   if (s == 1.0)
     return;
   std::lock_guard<std::mutex> lock(state->_mutex_state);
   Eigen::VectorXd d = Eigen::VectorXd::Ones(state->_Cov.rows());
+  const Eigen::Vector3d shift = (1.0 - s) * pivot;
+  const bool shifted = shift.norm() > 0.0;
+  std::vector<std::pair<int, Eigen::Matrix3d>> blocks; // extra covariance blocks (globally anchored inverse depth + shift)
 
   // IMU state [q(4) p(3) v(3) bg(3) ba(3)]: scale p and v (values and FEJ through the composite setter so
   // the cached 16-vector used by IMU::update() stays consistent)
@@ -661,6 +673,8 @@ void StateHelper::rescale(std::shared_ptr<State> state, double s) {
     Eigen::MatrixXd xf = state->_imu->fej();
     x.block(4, 0, 6, 1) *= s;
     xf.block(4, 0, 6, 1) *= s;
+    x.block(4, 0, 3, 1) += shift; // position only: the velocity has no origin
+    xf.block(4, 0, 3, 1) += shift;
     state->_imu->set_value(x);
     state->_imu->set_fej(xf);
     d.segment(state->_imu->p()->id(), 3).setConstant(s);
@@ -673,6 +687,8 @@ void StateHelper::rescale(std::shared_ptr<State> state, double s) {
     Eigen::MatrixXd xf = clone.second->fej();
     x.block(4, 0, 3, 1) *= s;
     xf.block(4, 0, 3, 1) *= s;
+    x.block(4, 0, 3, 1) += shift;
+    xf.block(4, 0, 3, 1) += shift;
     clone.second->set_value(x);
     clone.second->set_fej(xf);
     d.segment(clone.second->p()->id(), 3).setConstant(s);
@@ -705,8 +721,24 @@ void StateHelper::rescale(std::shared_ptr<State> state, double s) {
     lm->set_value(fac.asDiagonal() * lm->value());
     lm->set_fej(fac.asDiagonal() * lm->fej());
     d.segment(lm->id(), lm->size()) = fac;
+    // Landmarks expressed in the global frame also move with the pivot shift (anchored ones follow their clone)
+    if (shifted && lm->_feat_representation == LandmarkRepresentation::Representation::GLOBAL_3D) {
+      lm->set_value(lm->value() + shift);
+      lm->set_fej(lm->fej() + shift);
+    } else if (shifted && lm->_feat_representation == LandmarkRepresentation::Representation::GLOBAL_FULL_INVERSE_DEPTH) {
+      Eigen::Matrix3d A1 = dxyz_dinvdepth(lm->value());
+      lm->set_from_xyz(lm->get_xyz(false) + shift, false);
+      lm->set_from_xyz(lm->get_xyz(true) + shift, true);
+      Eigen::Matrix3d A2 = dxyz_dinvdepth(lm->value());
+      blocks.emplace_back(lm->id(), A2.inverse() * A1); // d(new param)/d(old param) = (dp/dx_new)^-1 (dp/dx_old)
+    }
   }
 
   // Covariance: error state scales linearly with the same factors
   state->_Cov = d.asDiagonal() * state->_Cov * d.asDiagonal();
+  for (auto const &b : blocks) {
+    int n = (int)state->_Cov.rows();
+    state->_Cov.block(b.first, 0, 3, n) = (b.second * state->_Cov.block(b.first, 0, 3, n)).eval();
+    state->_Cov.block(0, b.first, n, 3) = (state->_Cov.block(0, b.first, n, 3) * b.second.transpose()).eval();
+  }
 }

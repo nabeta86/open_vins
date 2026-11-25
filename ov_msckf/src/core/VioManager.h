@@ -116,6 +116,28 @@ public:
   /// (ov360) Number of rescale operations applied so far
   int scale_count() const { return scale_count_.load(); }
 
+  /// (ov360) One applied rescale: every stored global position p of the estimator became s p + shift
+  struct ScaleOp {
+    double s = 1.0;
+    Eigen::Vector3d shift = Eigen::Vector3d::Zero();
+  };
+
+  /// (ov360) Rescales applied after the first n (consumers keep their own buffers consistent with these)
+  std::vector<ScaleOp> scale_ops_since(size_t n) {
+    std::lock_guard<std::mutex> lock(scale_mtx_);
+    if (n >= scale_ops_.size())
+      return {};
+    return std::vector<ScaleOp>(scale_ops_.begin() + n, scale_ops_.end());
+  }
+
+  /**
+   * @brief (ov360) Where the similarity of request_scale() is anchored.
+   * false (default): the global origin, as before (the current position jumps by (s-1)|p|).
+   * true: the IMU position at the time the rescale is applied (the current position stays, the past moves).
+   */
+  void set_scale_pivot_current(bool on) { scale_pivot_current_ = on; }
+  bool scale_pivot_current() const { return scale_pivot_current_.load(); }
+
   /// Timestamp that the system was initialized at
   double initialized_time() { return startup_time; }
 
@@ -258,6 +280,8 @@ protected:
   double scale_pending_ = 1.0;
   std::atomic<double> scale_total_{1.0};
   std::atomic<int> scale_count_{0};
+  std::atomic<bool> scale_pivot_current_{false};
+  std::vector<ScaleOp> scale_ops_; // guarded by scale_mtx_
 
   // If we did a zero velocity update
   bool did_zupt_update = false;

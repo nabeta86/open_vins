@@ -85,6 +85,8 @@ private:
   std::deque<std::pair<double, Eigen::Vector3d>> refs_; // reference positions waiting to be matched by time
   ScaleEstimator est_;
   double seen_total_ = 1.0;   // app_->scale_applied() the buffers are consistent with
+  size_t seen_ops_ = 0;       // number of app_->scale_ops applied to the buffers
+  std::string pivot_ = "origin"; // ~scale_pivot: origin | current (see VioManager::set_scale_pivot_current)
   bool await_apply_ = false;  // a request is pending in the estimator
   bool mark_valid_ = false;
   Eigen::Vector3d mark_p_ = Eigen::Vector3d::Zero();

@@ -802,10 +802,21 @@ void VioManager::apply_pending_scale() {
   }
   if (s == 1.0)
     return;
-  StateHelper::rescale(state, s);
+  Eigen::Vector3d pivot = Eigen::Vector3d::Zero();
+  if (scale_pivot_current_.load())
+    pivot = state->_imu->pos();
+  StateHelper::rescale(state, s, pivot);
   propagator->invalidate_cache();
+  {
+    std::lock_guard<std::mutex> lock(scale_mtx_);
+    ScaleOp op;
+    op.s = s;
+    op.shift = (1.0 - s) * pivot;
+    scale_ops_.push_back(op);
+  }
   scale_total_ = scale_total_.load() * s;
   scale_count_++;
-  PRINT_INFO(GREEN "[SCALE]: state rescaled by x%.4f (total x%.4f, %d clones, %d slam landmarks)\n" RESET, s, scale_total_.load(),
-             (int)state->_clones_IMU.size(), (int)state->_features_SLAM.size());
+  PRINT_INFO(GREEN "[SCALE]: state rescaled by x%.4f about %s (total x%.4f, %d clones, %d slam landmarks)\n" RESET, s,
+             scale_pivot_current_.load() ? "the current position" : "the origin", scale_total_.load(), (int)state->_clones_IMU.size(),
+             (int)state->_features_SLAM.size());
 }

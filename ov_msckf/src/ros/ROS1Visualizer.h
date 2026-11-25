@@ -148,6 +148,7 @@ protected:
   ros::Publisher pub_points_slam_cov; // (mod) SLAM landmarks with 3x3 covariance
   std::shared_ptr<ScaleCalibrator> scale_calib_; // (ov360) scale correction interface
   double scale_seen_total_ = 1.0;                // (ov360) applied factor the published path is consistent with
+  size_t scale_seen_ops_ = 0;                    // (ov360) number of VioManager::scale_ops applied to the stored path
   ros::Publisher pub_loop_pose, pub_loop_point, pub_loop_extrinsic, pub_loop_intrinsics;
   std::shared_ptr<tf::TransformBroadcaster> mTfBr;
 

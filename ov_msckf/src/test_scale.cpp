@@ -174,6 +174,93 @@ static void test_rescale(LandmarkRepresentation::Representation rep, std::mt1993
   check(ok, name + ": rescale(1/s) restores values and covariance");
 }
 
+/// Numerical d(xyz)/d(param) of a landmark (independent of the analytic Jacobian used by rescale)
+static Eigen::MatrixXd num_dxyz(std::shared_ptr<Landmark> lm) {
+  Eigen::MatrixXd x0 = lm->value();
+  Eigen::MatrixXd J(3, lm->size());
+  for (int k = 0; k < lm->size(); k++) {
+    double h = 1e-6 * std::max(1.0, std::abs(x0(k)));
+    Eigen::MatrixXd xp = x0, xm = x0;
+    xp(k) += h;
+    xm(k) -= h;
+    lm->set_value(xp);
+    Eigen::Vector3d pp = lm->get_xyz(false);
+    lm->set_value(xm);
+    Eigen::Vector3d pm = lm->get_xyz(false);
+    J.col(k) = (pp - pm) / (2.0 * h);
+  }
+  lm->set_value(x0);
+  return J;
+}
+
+/// Rescale about a pivot: p' = pivot + s (p - pivot). Global positions get the extra shift (1-s) pivot,
+/// velocities and anchored landmarks only the factor; the uncertainty of every landmark in xyz is s^2 times the old one
+static void test_rescale_pivot(LandmarkRepresentation::Representation rep, std::mt19937 &rng) {
+  std::string name = LandmarkRepresentation::as_string(rep) + " pivot";
+  auto state = make_state(rep, 4, rng);
+  const double s = 0.8;
+  const Eigen::Vector3d pivot = state->_imu->pos(); // the current position stays where it is
+  const Eigen::Vector3d shift = (1.0 - s) * pivot;
+  bool global = (rep == LandmarkRepresentation::Representation::GLOBAL_3D || rep == LandmarkRepresentation::Representation::GLOBAL_FULL_INVERSE_DEPTH);
+  Eigen::MatrixXd imu0 = state->_imu->value(), imu0f = state->_imu->fej();
+  std::vector<Eigen::MatrixXd> cl0, lmraw0, lmcov0;
+  for (auto &c : state->_clones_IMU)
+    cl0.push_back(c.second->value());
+  std::vector<Eigen::Vector3d> lm0, lm0f;
+  Eigen::MatrixXd P0 = StateHelper::get_full_covariance(state);
+  for (auto &f : state->_features_SLAM) {
+    lm0.push_back(f.second->get_xyz(false));
+    lm0f.push_back(f.second->get_xyz(true));
+    lmraw0.push_back(f.second->value());
+    Eigen::MatrixXd A = num_dxyz(f.second);
+    lmcov0.push_back(A * P0.block(f.second->id(), f.second->id(), f.second->size(), f.second->size()) * A.transpose());
+  }
+
+  StateHelper::rescale(state, s, pivot);
+
+  Eigen::MatrixXd imu1 = state->_imu->value(), imu1f = state->_imu->fej();
+  bool ok = (imu1.block(4, 0, 3, 1) - pivot).norm() < 1e-9 && (imu1.block(7, 0, 3, 1) - s * imu0.block(7, 0, 3, 1)).norm() < 1e-9 &&
+            (imu1f.block(4, 0, 3, 1) - (s * imu0f.block(4, 0, 3, 1) + shift)).norm() < 1e-9 &&
+            (imu1.block(0, 0, 4, 1) - imu0.block(0, 0, 4, 1)).norm() < 1e-12 && (imu1.block(10, 0, 6, 1) - imu0.block(10, 0, 6, 1)).norm() < 1e-12;
+  check(ok, name + ": current IMU position unchanged, velocity x" + std::to_string(s) + ", q/bg/ba unchanged");
+  ok = true;
+  size_t k = 0;
+  for (auto &c : state->_clones_IMU) {
+    Eigen::Vector3d p0 = cl0[k].block(4, 0, 3, 1), p1 = c.second->value().block(4, 0, 3, 1);
+    ok = ok && (p1 - (pivot + s * (p0 - pivot))).norm() < 1e-9 && (c.second->value().block(0, 0, 4, 1) - cl0[k].block(0, 0, 4, 1)).norm() < 1e-12;
+    k++;
+  }
+  check(ok, name + ": clone positions scaled about the pivot");
+  ok = true;
+  k = 0;
+  Eigen::MatrixXd P1 = StateHelper::get_full_covariance(state);
+  double worst = 0.0;
+  for (auto &f : state->_features_SLAM) {
+    Eigen::Vector3d p = f.second->get_xyz(false), pf = f.second->get_xyz(true);
+    Eigen::Vector3d e = global ? Eigen::Vector3d(s * lm0[k] + shift) : Eigen::Vector3d(s * lm0[k]);
+    Eigen::Vector3d ef = global ? Eigen::Vector3d(s * lm0f[k] + shift) : Eigen::Vector3d(s * lm0f[k]);
+    ok = ok && (p - e).norm() < 1e-9 && (pf - ef).norm() < 1e-9;
+    Eigen::MatrixXd A = num_dxyz(f.second);
+    Eigen::MatrixXd C1 = A * P1.block(f.second->id(), f.second->id(), f.second->size(), f.second->size()) * A.transpose();
+    worst = std::max(worst, (C1 - s * s * lmcov0[k]).norm() / (s * s * lmcov0[k]).norm());
+    k++;
+  }
+  check(ok, name + ": landmark xyz " + std::string(global ? "scaled about the pivot" : "scaled in the anchor frame") + " (value+FEJ)");
+  check(worst < 1e-5, name + ": landmark xyz covariance = s^2 x old (rel err " + std::to_string(worst) + ")");
+  check((P1 - P1.transpose()).norm() / P1.norm() < 1e-12 && Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(P1).eigenvalues().minCoeff() > -1e-9,
+        name + ": covariance stays symmetric positive semi-definite");
+  // the pivot is the fixed point, so the inverse about the same pivot restores everything
+  StateHelper::rescale(state, 1.0 / s, pivot);
+  Eigen::MatrixXd P2 = StateHelper::get_full_covariance(state);
+  ok = (state->_imu->value() - imu0).norm() < 1e-9 && (state->_imu->fej() - imu0f).norm() < 1e-9 && (P2 - P0).norm() / P0.norm() < 1e-9;
+  k = 0;
+  for (auto &f : state->_features_SLAM) {
+    ok = ok && (f.second->value() - lmraw0[k]).norm() < 1e-8;
+    k++;
+  }
+  check(ok, name + ": rescale(1/s) about the same pivot restores values and covariance");
+}
+
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
@@ -191,6 +278,28 @@ int main(int argc, char **argv) {
     Eigen::MatrixXd x0 = state->_imu->value();
     StateHelper::rescale(state, 1.0);
     check((StateHelper::get_full_covariance(state) - P0).norm() == 0.0 && (state->_imu->value() - x0).norm() == 0.0, "rescale(1.0) is a no-op");
+  }
+
+  printf("=== StateHelper::rescale about a pivot ===\n");
+  test_rescale_pivot(LandmarkRepresentation::Representation::GLOBAL_3D, rng);
+  test_rescale_pivot(LandmarkRepresentation::Representation::ANCHORED_3D, rng);
+  test_rescale_pivot(LandmarkRepresentation::Representation::GLOBAL_FULL_INVERSE_DEPTH, rng);
+  test_rescale_pivot(LandmarkRepresentation::Representation::ANCHORED_FULL_INVERSE_DEPTH, rng);
+  test_rescale_pivot(LandmarkRepresentation::Representation::ANCHORED_MSCKF_INVERSE_DEPTH, rng);
+  test_rescale_pivot(LandmarkRepresentation::Representation::ANCHORED_INVERSE_DEPTH_SINGLE, rng);
+  {
+    // ScaleEstimator::transform keeps the pairs consistent after a pivot rescale: the estimate becomes 1
+    ScaleEstimator est(0.5, 10, 600, 0.0);
+    for (int i = 0; i < 60; i++) {
+      Eigen::Vector3d p(0.05 * i, 0.3 * std::sin(0.2 * i), 0.01 * i);
+      est.add(p, 1.25 * p + Eigen::Vector3d(3, -1, 2));
+    }
+    double sr = 0, sp = 0, rms = 0;
+    int n = 0;
+    bool ok = est.estimate(sr, n, sp, rms) && std::abs(sr - 1.25) < 1e-9;
+    est.transform(sr, (1.0 - sr) * Eigen::Vector3d(2.95, 0.1, 0.59));
+    ok = ok && est.estimate(sr, n, sp, rms) && std::abs(sr - 1.0) < 1e-9 && rms < 1e-9;
+    check(ok, "ScaleEstimator::transform(s, shift): pairs stay consistent, remaining estimate is 1");
   }
 
   printf("=== Umeyama scale / ScaleEstimator ===\n");

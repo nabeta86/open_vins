@@ -239,8 +239,14 @@ public:
    * Used to correct a scale error of the estimator from an external measurement (known distance,
    * reference trajectory); after this call every output of the filter is in the corrected units.
    * @param s factor to apply (> 0). 1 is a no-op.
+   * @param pivot fixed point of the similarity in the global frame: p' = pivot + s (p - pivot). Zero (default)
+   *        rescales about the global origin as before. Passing the current IMU position keeps the current pose
+   *        where it is (no jump of the published position), at the price of moving the take-off point instead.
+   *        Velocities are only scaled. The shift (1-s) pivot is treated as a constant change of the (unobservable)
+   *        global position gauge, so the covariance only needs the scale factors, except for globally anchored
+   *        inverse-depth landmarks whose 3x3 block gets the Jacobian of the re-parametrization.
    */
-  static void rescale(std::shared_ptr<State> state, double s);
+  static void rescale(std::shared_ptr<State> state, double s, const Eigen::Vector3d &pivot = Eigen::Vector3d::Zero());
 
 private:
   /**

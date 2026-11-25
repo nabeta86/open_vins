@@ -641,13 +641,13 @@ void ROS1Visualizer::publish_state() {
 
   // (ov360) if the estimator was rescaled since the last publish, rescale the stored path so the
   // published pathimu stays consistent with the current units
-  if (_app->scale_applied() != scale_seen_total_) {
-    double r = _app->scale_applied() / scale_seen_total_;
+  for (auto const &op : _app->scale_ops_since(scale_seen_ops_)) {
     for (auto &ps : poses_imu) {
-      ps.pose.position.x *= r;
-      ps.pose.position.y *= r;
-      ps.pose.position.z *= r;
+      ps.pose.position.x = op.s * ps.pose.position.x + op.shift(0);
+      ps.pose.position.y = op.s * ps.pose.position.y + op.shift(1);
+      ps.pose.position.z = op.s * ps.pose.position.z + op.shift(2);
     }
+    scale_seen_ops_++;
     scale_seen_total_ = _app->scale_applied();
   }
 

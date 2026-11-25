@@ -32,6 +32,12 @@ ScaleCalibrator::ScaleCalibrator(std::shared_ptr<ros::NodeHandle> nh, std::share
   nh_->param<double>("scale_match_tol", match_tol_, 0.05);
   nh_->param<double>("scale_inject_at", inject_at_, -1.0);
   nh_->param<double>("scale_inject", inject_, 1.0);
+  nh_->param<std::string>("scale_pivot", pivot_, "origin");
+  if (pivot_ != "origin" && pivot_ != "current") {
+    PRINT_WARNING(YELLOW "[SCALE]: unknown scale_pivot '%s' (origin | current), using origin\n" RESET, pivot_.c_str());
+    pivot_ = "origin";
+  }
+  app_->set_scale_pivot_current(pivot_ == "current");
   est_ = ScaleEstimator(min_span, min_pairs, max_pairs, min_step);
 
   pub_est_ = nh_->advertise<std_msgs::Float64>("scale_est", 2);
@@ -42,9 +48,9 @@ ScaleCalibrator::ScaleCalibrator(std::shared_ptr<ros::NodeHandle> nh, std::share
   if (!ref_topic_.empty()) {
     sub_ref_ = nh_->subscribe<topic_tools::ShapeShifter>(ref_topic_, 50, &ScaleCalibrator::cb_ref, this);
   }
-  PRINT_INFO("[SCALE]: commands %s %s %s, reference '%s', auto=%d (tol %.3f), min_span=%.2f m, min_pairs=%d, inject=%.3f@%.1fs\n",
+  PRINT_INFO("[SCALE]: commands %s %s %s, reference '%s', auto=%d (tol %.3f), min_span=%.2f m, min_pairs=%d, inject=%.3f@%.1fs, pivot=%s\n",
              sub_cmd_.getTopic().c_str(), sub_mark_.getTopic().c_str(), sub_dist_.getTopic().c_str(), ref_topic_.c_str(), (int)auto_apply_,
-             auto_tol_, min_span, min_pairs, inject_, inject_at_);
+             auto_tol_, min_span, min_pairs, inject_, inject_at_, pivot_.c_str());
   std::lock_guard<std::mutex> lock(mtx_);
   publish_status(true);
 }
@@ -128,16 +134,19 @@ void ScaleCalibrator::request(double s, const std::string &why) {
 }
 
 void ScaleCalibrator::sync_with_app() {
-  double tot = app_->scale_applied();
-  if (tot == seen_total_)
+  auto ops = app_->scale_ops_since(seen_ops_);
+  if (ops.empty())
     return;
-  double r = tot / seen_total_;
-  for (auto &h : hist_)
-    h.second *= r;
-  est_.rescale(r);
-  if (mark_valid_)
-    mark_p_ *= r;
-  seen_total_ = tot;
+  // Every stored VIO position became s p + shift (shift = 0 when rescaling about the origin)
+  for (auto const &op : ops) {
+    for (auto &h : hist_)
+      h.second = op.s * h.second + op.shift;
+    est_.transform(op.s, op.shift);
+    if (mark_valid_)
+      mark_p_ = op.s * mark_p_ + op.shift;
+  }
+  seen_ops_ += ops.size();
+  seen_total_ = app_->scale_applied();
   await_apply_ = false;
 }
 
@@ -214,10 +223,10 @@ void ScaleCalibrator::publish_status(bool force) {
                 "{\"scale_total\":%.6f,\"n_applied\":%d,\"await\":%d,\"last\":\"%s\","
                 "\"have_est\":%d,\"est\":%.6f,\"est_rel\":%.6f,\"est_n\":%d,\"est_span\":%.3f,\"est_rms\":%.4f,"
                 "\"n_pairs\":%d,\"span\":%.3f,\"min_span\":%.2f,\"min_pairs\":%d,"
-                "\"mark\":%d,\"dist_from_mark\":%.3f,\"auto\":%d,\"auto_tol\":%.3f,\"ref_topic\":\"%s\"}",
+                "\"mark\":%d,\"dist_from_mark\":%.3f,\"auto\":%d,\"auto_tol\":%.3f,\"ref_topic\":\"%s\",\"pivot\":\"%s\"}",
                 app_->scale_applied(), app_->scale_count(), (int)await_apply_, last_why_.c_str(), (int)have_est_, est_abs_, est_rel_, est_n_,
                 est_span_, est_rms_, est_.size(), est_.span(), est_.min_span(), est_.min_pairs(), (int)mark_valid_, dist_from_mark,
-                (int)auto_apply_, auto_tol_, ref_topic_.c_str());
+                (int)auto_apply_, auto_tol_, ref_topic_.c_str(), pivot_.c_str());
   std_msgs::String m;
   m.data = buf;
   pub_status_.publish(m);
