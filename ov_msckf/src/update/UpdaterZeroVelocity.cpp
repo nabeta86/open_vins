@@ -62,7 +62,7 @@ UpdaterZeroVelocity::UpdaterZeroVelocity(UpdaterOptions &options, NoiseManager &
   }
 }
 
-bool UpdaterZeroVelocity::try_update(std::shared_ptr<State> state, double timestamp) {
+bool UpdaterZeroVelocity::try_update(std::shared_ptr<State> state, double timestamp, double prev_cam_time) {
 
   // Return if we don't have any imu data yet
   if (imu_data.empty()) {
@@ -220,7 +220,8 @@ bool UpdaterZeroVelocity::try_update(std::shared_ptr<State> state, double timest
   if (override_with_disparity_check) {
 
     // Get the disparity statistics from this image to the previous
-    double time0_cam = state->_timestamp;
+    // (ov360) asynchronous multi-camera: compare against the previous frame of this camera when told so
+    double time0_cam = (prev_cam_time >= 0.0) ? prev_cam_time : state->_timestamp;
     double time1_cam = timestamp;
     int num_features = 0;
     double disp_avg = 0.0;

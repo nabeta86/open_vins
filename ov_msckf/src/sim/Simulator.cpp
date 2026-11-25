@@ -308,7 +308,7 @@ bool Simulator::get_state(double desired_time, Eigen::Matrix<double, 17, 1> &imu
 bool Simulator::get_next_imu(double &time_imu, Eigen::Vector3d &wm, Eigen::Vector3d &am) {
 
   // Return if the camera measurement should go before us
-  if (timestamp_last_cam + 1.0 / params.sim_freq_cam < timestamp_last_imu + 1.0 / params.sim_freq_imu)
+  if (timestamp_last_cam + cam_step() < timestamp_last_imu + 1.0 / params.sim_freq_imu)
     return false;
 
   // Else lets do a new measurement!!!
@@ -389,12 +389,19 @@ bool Simulator::get_next_cam(double &time_cam, std::vector<int> &camids,
                              std::vector<std::vector<std::pair<size_t, Eigen::VectorXf>>> &feats) {
 
   // Return if the imu measurement should go before us
-  if (timestamp_last_imu + 1.0 / params.sim_freq_imu < timestamp_last_cam + 1.0 / params.sim_freq_cam)
+  if (timestamp_last_imu + 1.0 / params.sim_freq_imu < timestamp_last_cam + cam_step())
     return false;
 
   // Else lets do a new measurement!!!
-  timestamp_last_cam += 1.0 / params.sim_freq_cam;
+  // (ov360) sim_cam_async: one camera per call, staggered by 1/(N·freq); otherwise all cameras at once (upstream)
+  timestamp_last_cam += cam_step();
   timestamp = timestamp_last_cam;
+  int cam_first = 0, cam_last = params.state_options.num_cameras;
+  if (params.sim_cam_async && params.state_options.num_cameras > 1) {
+    cam_first = cam_async_next;
+    cam_last = cam_async_next + 1;
+    cam_async_next = (cam_async_next + 1) % params.state_options.num_cameras;
+  }
   time_cam = timestamp_last_cam - params.calib_camimu_dt;
 
   // Get the pose at the current timestep
@@ -408,8 +415,8 @@ bool Simulator::get_next_cam(double &time_cam, std::vector<int> &camids,
     return false;
   }
 
-  // Loop through each camera
-  for (int i = 0; i < params.state_options.num_cameras; i++) {
+  // Loop through each camera (ov360: only one of them when sim_cam_async)
+  for (int i = cam_first; i < cam_last; i++) {
 
     // Get the uv features for this frame
     std::vector<std::pair<size_t, Eigen::VectorXf>> uvs = project_pointcloud(R_GtoI, p_IinG, i, featmap);

@@ -24,6 +24,13 @@
    TagSLAM などの参照軌跡) でフィルタの状態そのものを相似変換で引き直す。pose_out (出口側) で位置に係数を
    掛ける方式を置き換えた = 以後の `/ov_msckf/*` の出力・traj.txt・ランドマーク・共分散がすべて補正後の単位になる
 
+5. 非同期マルチカメラ (2026-11-13、ブランチ `ov360-multicam`): Insta360 Air の両眼 (double sphere ×2) と AR0234 (pinhole) の
+   3 カメラを 1 つの推定器で回す。カメラは同期していないので各フレームが別々の計測 (sensor_ids が 1 つ) として入る。
+   上流は「別カメラのフレームで失われた特徴を打ち切らない」ところまでは対応済みだが、(a) ZUPT の視差判定が
+   直前の処理フレーム (= 別カメラ) と比べて特徴 0 になり、(b) SLAM 候補の判定「追跡長 > max_clones」が
+   他カメラの clone も窓に入るため成立せず SLAM 特徴が一切立たない。この 2 点を直し、シミュレータに非同期カメラの
+   モードを足して検証した
+
 ## 変更点
 
 - `ov_core/src/track/TrackAruco.h`: 辞書 DICT_6X6_1000 → DICT_APRILTAG_36h11、
@@ -97,6 +104,22 @@
   - `ov_msckf/src/test_scale.cpp` (新規、`rosrun ov_msckf test_scale`): 6 つの表現すべてで rescale の値・FEJ・共分散・往復、
     Umeyama と ScaleEstimator
   - `ov_msckf/cmake/ROS1.cmake`, `package.xml`: `topic_tools` 依存 (参照トピックの型を実行時に判別)
+
+- (2026-11-13, 非同期マルチカメラ) 1 計測に全カメラが入る従来の経路 (単眼・同期ステレオ) はビット同一のまま。
+  いずれも `message.sensor_ids.size() < num_cameras` のときだけ挙動が変わる
+  - `ov_msckf/src/core/VioManager.h/.cpp`: `last_cam_time` (カメラ id → 最後に与えたフレーム時刻)。
+    `track_image_and_update()` と `feed_measurement_simulation()` (シミュレータ経路は画像の入口を通らない) の両方で記録し、
+    ZUPT には「このカメラの前フレーム時刻」を渡す。
+    `do_feature_propagate_update()` の SLAM 候補判定に「marg される clone に達していて、かつ自分のカメラの最新フレームでも
+    観測されている (= 窓全体を跨ぐ生きた追跡)」を追加 (非同期時のみ)
+  - `ov_msckf/src/update/UpdaterZeroVelocity.h/.cpp`: `try_update(state, timestamp, prev_cam_time = -1)`。
+    負なら従来どおり `state->_timestamp` と比べる
+  - `ov_msckf/src/core/VioManagerOptions.h`: `sim_cam_async` (任意キー、既定 false)
+  - `ov_msckf/src/sim/Simulator.h/.cpp`: `sim_cam_async` でカメラ i が 1/(N·freq) ずらして単独で届く (`cam_step()`、`cam_async_next`)
+  - `ov_msckf/launch/simulation.launch`: 引数 `sim_cam_async`
+  - `config/rpng_sim_ds_pin3/`: double sphere 2 眼 + pinhole 1 眼のシミュレーション設定 (rpng_sim_ds + rpng_sim の cam2)
+  - 検証: Indoor_drone_slam 側 `nodes/tests/ov360_smoke/smoke_sim_multicam.sh` (同期 vs 非同期の RMSE、SLAM 特徴が立つこと、
+    ZUPT の視差判定に特徴が入ること)
 
 ## 元との差分
 

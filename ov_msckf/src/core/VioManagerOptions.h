@@ -525,6 +525,11 @@ struct VioManagerOptions {
   /// Frequency (Hz) that we will simulate our inertial measurement unit
   double sim_freq_imu = 400.0;
 
+  /// (ov360) If true, the simulated cameras are *not* synchronized: camera i fires alone, 1/(N·freq) after
+  /// camera i-1, and each frame is delivered as its own single-camera message (like unsynchronized real
+  /// cameras, e.g. Insta360 eyes + AR0234). Default false = all cameras in one message (upstream).
+  bool sim_cam_async = false;
+
   /// Feature distance we generate features from (minimum)
   double sim_min_feature_gen_distance = 5;
 
@@ -547,6 +552,7 @@ struct VioManagerOptions {
       parser->parse_config("sim_distance_threshold", sim_distance_threshold);
       parser->parse_config("sim_freq_cam", sim_freq_cam);
       parser->parse_config("sim_freq_imu", sim_freq_imu);
+      parser->parse_config("sim_cam_async", sim_cam_async, false); // (ov360) optional key
       parser->parse_config("sim_min_feature_gen_dist", sim_min_feature_gen_distance);
       parser->parse_config("sim_max_feature_gen_dist", sim_max_feature_gen_distance);
     }
@@ -558,6 +564,7 @@ struct VioManagerOptions {
     PRINT_DEBUG("  - traj path: %s\n", sim_traj_path.c_str());
     PRINT_DEBUG("  - dist thresh: %.2f\n", sim_distance_threshold);
     PRINT_DEBUG("  - cam feq: %.2f\n", sim_freq_cam);
+    PRINT_DEBUG("  - cam async (ov360): %d\n", sim_cam_async);
     PRINT_DEBUG("  - imu feq: %.2f\n", sim_freq_imu);
     PRINT_DEBUG("  - min feat dist: %.2f\n", sim_min_feature_gen_distance);
     PRINT_DEBUG("  - max feat dist: %.2f\n", sim_max_feature_gen_distance);

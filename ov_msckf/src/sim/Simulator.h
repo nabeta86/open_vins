@@ -189,6 +189,14 @@ protected:
   /// Last time we had an CAMERA reading
   double timestamp_last_cam;
 
+  /// (ov360) sim_cam_async: which camera fires next, and the time step between successive camera frames
+  /// (1/freq for synchronized cameras, 1/(N·freq) when each camera fires alone)
+  int cam_async_next = 0;
+  double cam_step() const {
+    int n = params.state_options.num_cameras;
+    return (params.sim_cam_async && n > 1) ? 1.0 / (params.sim_freq_cam * n) : 1.0 / params.sim_freq_cam;
+  }
+
   /// Our running acceleration bias
   Eigen::Vector3d true_bias_accel = Eigen::Vector3d::Zero();
 

@@ -24,6 +24,7 @@
 
     <arg name="freq_cam"    default="10" />
     <arg name="freq_imu"    default="400" />
+    <arg name="sim_cam_async" default="false" /> <!-- (ov360) cameras unsynchronized, one per message -->
     <arg name="dataset"    default="tum_corridor1_512_16_okvis.txt" /> <!-- udel_gore, udel_gore_zupt, tum_corridor1_512_16_okvis, udel_arl -->
 
     <!-- if we should perturb the initial state values (i.e. calibration) -->
@@ -58,6 +59,7 @@
         <param name="sim_seed_preturb"       type="int"    value="$(arg seed)" />
         <param name="sim_freq_cam"           type="int"    value="$(arg freq_cam)" />
         <param name="sim_freq_imu"           type="int"    value="$(arg freq_imu)" />
+        <param name="sim_cam_async"          type="bool"   value="$(arg sim_cam_async)" />
         <param name="sim_do_perturbation"    type="bool"   value="$(arg sim_do_perturbation)" />
 
         <param name="sim_min_feature_gen_dist" type="double" value="$(arg feat_dist_min)" />

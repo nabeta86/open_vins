@@ -25,6 +25,7 @@
 #include <Eigen/StdVector>
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <mutex>
 #include <boost/filesystem.hpp>
 #include <fstream>
@@ -261,6 +262,11 @@ protected:
   // If we did a zero velocity update
   bool did_zupt_update = false;
   bool has_moved_since_zupt = false;
+
+  // (ov360) Last fed frame time per camera id. Used for the ZUPT disparity check when the cameras are
+  // unsynchronized and each arrives as its own message (e.g. Insta360 eyes + AR0234): the previous
+  // processed frame (state->_timestamp) then belongs to another camera. Unused for mono / synced messages.
+  std::map<int, double> last_cam_time;
 
   // Good features that where used in the last update (used in visualization)
   std::vector<Eigen::Vector3d> good_features_MSCKF;

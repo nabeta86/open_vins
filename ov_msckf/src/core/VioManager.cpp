@@ -241,13 +241,23 @@ void VioManager::feed_measurement_simulation(double timestamp, const std::vector
   trackSIM->feed_measurement_simulation(timestamp, camids, feats);
   rT2 = boost::posix_time::microsec_clock::local_time();
 
+  // (ov360) same per-camera bookkeeping as track_image_and_update() (asynchronous cameras, sim_cam_async)
+  double zupt_prev_cam_time = -1.0;
+  if ((int)camids.size() < params.state_options.num_cameras && !camids.empty()) {
+    auto it_prev = last_cam_time.find(camids.at(0));
+    if (it_prev != last_cam_time.end())
+      zupt_prev_cam_time = it_prev->second;
+  }
+  for (int cid : camids)
+    last_cam_time[cid] = timestamp;
+
   // Check if we should do zero-velocity, if so update the state with it
   // Note that in the case that we only use in the beginning initialization phase
   // If we have since moved, then we should never try to do a zero velocity update!
   if (is_initialized_vio && updaterZUPT != nullptr && (!params.zupt_only_at_beginning || !has_moved_since_zupt)) {
     // If the same state time, use the previous timestep decision
     if (state->_timestamp != timestamp) {
-      did_zupt_update = updaterZUPT->try_update(state, timestamp);
+      did_zupt_update = updaterZUPT->try_update(state, timestamp, zupt_prev_cam_time);
     }
     if (did_zupt_update) {
       assert(state->_timestamp == timestamp);
@@ -315,13 +325,27 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
   }
   rT2 = boost::posix_time::microsec_clock::local_time();
 
+  // (ov360) Asynchronous multi-camera: when a message carries fewer cameras than the system has, the cameras
+  // are not synchronized and the previous processed frame usually belongs to another camera. The ZUPT
+  // disparity must then be measured against the previous frame of *this* camera (first id of the message;
+  // cameras that share a message share a timestamp). Mono / synced messages keep the upstream behaviour
+  // (prev = -1 → state->_timestamp), so those paths stay bit-identical.
+  double zupt_prev_cam_time = -1.0;
+  if ((int)message.sensor_ids.size() < params.state_options.num_cameras) {
+    auto it_prev = last_cam_time.find(message.sensor_ids.at(0));
+    if (it_prev != last_cam_time.end())
+      zupt_prev_cam_time = it_prev->second;
+  }
+  for (int cid : message.sensor_ids)
+    last_cam_time[cid] = message.timestamp;
+
   // Check if we should do zero-velocity, if so update the state with it
   // Note that in the case that we only use in the beginning initialization phase
   // If we have since moved, then we should never try to do a zero velocity update!
   if (is_initialized_vio && updaterZUPT != nullptr && (!params.zupt_only_at_beginning || !has_moved_since_zupt)) {
     // If the same state time, use the previous timestep decision
     if (state->_timestamp != message.timestamp) {
-      did_zupt_update = updaterZUPT->try_update(state, message.timestamp);
+      did_zupt_update = updaterZUPT->try_update(state, message.timestamp, zupt_prev_cam_time);
     }
     if (did_zupt_update) {
       assert(state->_timestamp == message.timestamp);
@@ -442,11 +466,23 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   auto it2 = feats_marg.begin();
   while (it2 != feats_marg.end()) {
     // See if any of our camera's reached max track
+    // (ov360) Asynchronous cameras (message carries fewer cameras than the system has): the clone window also
+    // holds the other cameras' frames, so a single camera's track can never exceed max_clone_size measurements
+    // and the upstream test would never promote anything to SLAM. A track that reaches the clone being
+    // marginalized *and* is still alive at its camera's newest frame spans the whole window → candidate.
+    bool async_cams = (int)message.sensor_ids.size() < params.state_options.num_cameras;
     bool reached_max = false;
     for (const auto &cams : (*it2)->timestamps) {
       if ((int)cams.second.size() > state->_options.max_clone_size) {
         reached_max = true;
         break;
+      }
+      if (async_cams && !cams.second.empty()) {
+        auto it_last = last_cam_time.find((int)cams.first);
+        if (it_last != last_cam_time.end() && cams.second.back() >= it_last->second) {
+          reached_max = true;
+          break;
+        }
       }
     }
     // If max track, then add it to our possible slam feature list

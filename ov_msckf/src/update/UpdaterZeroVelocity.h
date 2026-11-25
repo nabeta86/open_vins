@@ -110,9 +110,13 @@ public:
    * @brief Will first detect if the system is zero velocity, then will update.
    * @param state State of the filter
    * @param timestamp Next camera timestamp we want to see if we should propagate to.
+   * @param prev_cam_time (ov360) Time of the previous frame of the *same camera* for the disparity check.
+   *        Negative (default) = use state->_timestamp as upstream does. Needed when several unsynchronized
+   *        cameras each arrive as their own message: state->_timestamp is then usually another camera's frame
+   *        and no feature is seen at both times, so the disparity override would never pass.
    * @return True if the system is currently at zero velocity
    */
-  bool try_update(std::shared_ptr<State> state, double timestamp);
+  bool try_update(std::shared_ptr<State> state, double timestamp, double prev_cam_time = -1.0);
 
 protected:
   /// Options used during update (chi2 multiplier)
